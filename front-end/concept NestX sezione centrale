@@ -1,0 +1,435 @@
+NESTX — CONCEPT FRONT-END
+PARTE CENTRALE · PROFILO & CONTENUTI (v1)
+1. RUOLO DELLA PARTE CENTRALE
+
+La parte centrale rappresenta il cuore sociale di NestX.
+È l’area in cui l’utente:
+
+vede chi è (profilo)
+
+vede cosa pubblica
+
+vede cosa seguono le persone che segue
+
+vede eventi/live associati a un profilo
+
+Non è un’area gestionale avanzata (quella viene dopo), ma identitaria e contenutistica.
+
+2. TIPOLOGIE DI PAGINA PROFILO
+
+La parte centrale gestisce 3 casi distinti:
+
+A) My Profile
+
+Profilo dell’utente loggato.
+
+B) Profilo pubblico di altro utente
+
+Utente con profilo pubblico o già seguito.
+
+C) Profilo privato di altro utente
+
+Utente privato non ancora seguito / richiesta pendente.
+
+Ogni caso modifica azioni visibili e contenuti accessibili, ma la struttura resta la stessa.
+
+3. STRUTTURA DELLA PARTE CENTRALE
+3.1 Header Profilo (sempre presente)
+
+Contiene:
+
+Immagine di copertina
+
+Immagine profilo
+
+Nome / username
+
+Badge (VIP / Verificato / Creator / ecc.)
+
+Bio
+
+Informazioni base (lingua, area geografica, ecc. secondo concept)
+
+Eventuali contatori (post / follower / following) se previsti
+
+👉 L’header non cambia struttura, cambiano solo:
+
+azioni disponibili
+
+testi/stati mostrati
+
+3.2 Azioni Profilo (dipendenti dal contesto)
+Su My Profile
+
+Pulsante primario: “Pubblica / Crea Post”
+
+sempre visibile
+
+posizionato in alto, sopra i tab
+
+azione immediata e chiara
+
+Nessun pulsante Follow
+
+Messaggi non rilevanti
+
+Su Profilo di altro utente
+
+Pulsante Segui / Non seguire / Richiesta inviata
+
+Pulsante Invia messaggio (solo se consentito dal backend)
+
+Menu “…” con:
+
+Blocca utente
+
+Muta utente
+
+Segnala utente
+
+Le azioni visibili dipendono da:
+
+stato follow
+
+privacy account
+
+blocchi reciproci
+
+permessi backend
+
+4. SEZIONE TAB CENTRALI
+
+I tab fanno parte integrante della parte centrale.
+
+Tab definiti:
+1️⃣ Post
+
+Mostra i post pubblicati dall’utente del profilo
+
+Visibile sempre (se permesso dalla privacy)
+
+2️⃣ I miei post
+
+Visibile solo su My Profile
+
+Serve come distinzione logica, anche se tecnicamente può coincidere con “Post”
+
+3️⃣ Feed dei seguiti
+
+Mostra i post delle persone seguite
+
+Visibile solo se:
+
+è My Profile
+
+oppure il concept prevede l’accesso da profilo
+
+(La collocazione definitiva è nel centro; non è sidebar)
+
+4️⃣ Hold Live
+
+Mostra eventi/live:
+
+programmati
+
+in attesa
+
+associati a quel profilo
+
+È parte del profilo, non della home live
+
+5. CONTENUTO DEI TAB
+
+Per ogni tab sono definiti:
+
+Stati standard
+
+Contenuto presente → lista
+
+Contenuto assente → stato vuoto con messaggio guida
+
+Contenuto non accessibile → messaggio di restrizione (privacy)
+
+Esempi:
+
+Nessun post → “Non ha ancora pubblicato”
+
+Feed seguiti vuoto → “Inizia a seguire qualcuno”
+
+Hold live vuoto → “Nessun evento programmato”
+
+Gli stati vuoti sono funzionali alla comprensione, non decorativi.
+
+6. STATI SPECIALI GESTITI DALLA PARTE CENTRALE
+
+La parte centrale deve gestire correttamente:
+
+Profilo privato non seguito
+
+Profilo privato con richiesta pending
+
+Utente che mi ha bloccato
+
+Utente che ho bloccato
+
+Profilo non trovato
+
+Utente non loggato (se accesso pubblico previsto)
+
+In questi casi:
+
+header visibile in forma ridotta o informativa
+
+contenuti nascosti
+
+CTA coerente (es. “Invia richiesta”, “Profilo non disponibile”)
+
+7. COSA NON FA LA PARTE CENTRALE
+
+Esplicitamente escluso:
+
+Creazione Evento
+
+Creazione ADV
+
+Creazione Vetrina
+
+Gestione token
+
+FED / ADV / Vetrina (colonna destra)
+
+Navigazione principale (colonna sinistra)
+
+Funzioni admin
+
+Queste vivono altrove, per evitare sovraccarico concettuale.
+
+8. DECISIONI CHIUSE (RIASSUNTO)
+
+Il pulsante Crea Post è:
+
+solo su My Profile
+
+in alto
+
+azione primaria
+
+Evento / ADV / Vetrina:
+
+NON nella parte centrale
+
+collocati in Live → Go Live
+
+La parte centrale è:
+
+identitaria
+
+contenutistica
+
+leggibile anche da utenti non esperti di social
+
+9. STATO DEL LAVORO
+
+✔️ Parte centrale definita concettualmente
+✔️ Nessuna decisione rimandata
+✔️ Pronta per:
+
+implementazione front-end
+
+test UX
+
+collegamento API
+
+MEMO DEFINITIVO — Parte Centrale · Profilo & Contenuti (v1, aggiornato)
+Struttura Tabs
+
+Post (sempre, se permesso da privacy)
+
+I miei post (solo My Profile)
+
+Feed seguiti (solo My Profile)
+
+Old Live (TAB dedicato, appare solo se old-live count ≥ 1)
+
+Hold Live viene eliminato dalla parte centrale v1: l’evento attuale / programmato non è un tab, è una card in cima ai Post.
+
+Regola Eventi nel Centro
+
+Evento attuale / programmato del profilo:
+
+appare in cima ai Post come Event Card (prioritaria sopra i post)
+
+su My Profile e su Profilo altrui
+
+Eventi dei seguiti:
+
+appaiono nel tab Feed seguiti mescolati ai post, in ordine cronologico (creazione)
+
+API mapping (solo quelle del Centro)
+
+Header
+
+My Profile: GET /profile/me (+ opz. GET /profile/status/me)
+
+Profilo altrui: GET /profile/public/:id ✅ source of truth
+
+Stato follow: GET /follow/relationship/:id
+
+Event Card in cima ai Post
+
+GET /profileEventBanner/event-banner/:userId
+
+Posts
+
+My posts: GET /posts/me
+
+Post profilo altrui: GET /posts/user/:userId (gestire privacy/403)
+
+Feed seguiti (mixed)
+
+GET /posts/feed/following-mixed
+
+Old Live tab (solo se presenti)
+
+GET /old-live/:userId
+
+Azioni profilo
+
+Follow: POST /follow/:id
+
+Unfollow: DELETE /follow/:id
+
+Cancel request: DELETE /follow/request/:id/cancel
+
+Messaggi: POST /message/:recipientId (se permesso)
+
+Blocca: POST /block/:id / DELETE /block/:id
+
+Muta: POST /mute/:targetUserId / DELETE /mute/:targetUserId
+
+Report: POST /report (body con targetType/targetId)
+
+A) Pagina My Profile (isMe = true)
+Header
+
+mostra tutto (avatar/cover/bio/badge)
+
+CTA (sopra i tab)
+
+✅ Crea Post (sempre)
+
+Tabs visibili
+
+✅ Post
+
+✅ I miei post (può puntare alla stessa lista di Post, ma resta tab separato per UX)
+
+✅ Feed seguiti (following-mixed)
+
+✅ Old Live solo se oldLiveCount >= 1
+
+Contenuto tab “Post” (My Profile)
+
+Ordine:
+
+EventCard (se presente) in cima
+
+Lista GET /posts/me
+
+Empty state: “Non hai ancora pubblicato”
+
+B) Profilo altrui pubblico / accessibile (isMe=false, no blocchi, privacy OK)
+Header
+
+mostra info pubbliche
+
+CTA
+
+Follow button con 3 stati:
+
+status=none → “Segui” → POST /follow/:id
+
+status=pending → “Richiesta inviata” + azione “Annulla” → DELETE /follow/request/:requestId/cancel
+
+status=following → “Seguito” + azione “Non seguire” → DELETE /follow/:id
+
+Messaggio: mostra SOLO se backend lo consente (se non hai flag, provi e gestisci errore con toast)
+
+Menu …: Blocca / Muta / Segnala
+
+Tabs visibili
+
+✅ Post (se permesso dalla privacy)
+
+✅ Old Live solo se oldLiveCount >= 1
+
+❌ I miei post
+
+❌ Feed seguiti
+
+Contenuto tab “Post” (profilo altrui)
+
+Ordine:
+
+EventCard (se presente) in cima
+
+Lista GET /posts/user/:userId
+
+Empty state: “Non ha ancora pubblicato”
+
+C) Profilo altrui privato NON seguito (isPrivate=true + relationship=none)
+Header
+
+visibile, ma “ridotto” (bio ok se vuoi, ma niente contenuti)
+
+CTA
+
+“Invia richiesta” → POST /follow/:id
+
+Niente messaggi (di default)
+
+Menu … ok (blocca/muta/segnala)
+
+Tabs visibili
+
+✅ Post (ma contenuto “non accessibile”)
+
+✅ Old Live?
+Qui decidi tu: io direi NO se profilo privato e non seguito (coerente privacy).
+Quindi: mostra Old Live solo se privacy lo permette (stesso gate dei post).
+
+Tab Post (privato non seguito)
+
+Messaggio: “Profilo privato. Invia richiesta per vedere i contenuti.”
+
+D) Profilo altrui privato con richiesta pending (relationship=pending)
+
+Come sopra, ma CTA cambia:
+
+“Richiesta inviata” + “Annulla richiesta”
+
+E) Blocchi (403 su profile/public o flag blocked)
+
+Caso utente che mi ha bloccato o che ho bloccato.
+
+Header
+
+minimale (“Profilo non disponibile”)
+
+CTA
+
+se io ho bloccato e vuoi permettere sblocco: mostra “Sblocca” → DELETE /block/:id
+
+altrimenti niente
+
+Tabs
+
+nessun contenuto (o tab disabilitati)
+
+F) Old Live TAB (regola unica)
+
+Chiami GET /old-live/:userId
+
+Se len === 0 → tab non esiste
+
+Se len > 0 → tab visibile e lista live concluse (max 10)

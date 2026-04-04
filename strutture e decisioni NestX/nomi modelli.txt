@@ -1,0 +1,413 @@
+AccountTrustRecord.js
+    kind: { type: String, enum: ["report_actioned"], required: true },
+    reportId: { type: mongoose.Schema.Types.ObjectId, ref: "Report", default: null },
+    targetType: { type: String, enum: ["user", "post", "event"], required: true },
+    targetId: { type: mongoose.Schema.Types.ObjectId, required: true },
+    severity: { type: String, enum: ["grave", "gravissimo"], required: true },
+    category: { type: String, default: null },
+    at: { type: Date, default: Date.now },
+    byAdminId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, unique: true, index: true },
+    confirmedTotal: { type: Number, default: 0, min: 0 },
+    confirmedGrave: { type: Number, default: 0, min: 0 },
+    confirmedGravissimo: { type: Number, default: 0, min: 0 },
+    tier: { type: String, enum: ["OK", "ATTENZIONE", "CRITICO", "BLOCCO"], default: "OK", index: true },
+    tierScore: { type: Number, default: 0, index: true, },
+    lastConfirmedAt: { type: Date, default: null, index: true },
+    lastConfirmedSeverity: { type: String, enum: ["grave", "gravissimo"], default: null },
+    lastConfirmedCategory: { type: String, default: null },
+    lastEvents: { type: [TrustEventSchema], default: [] },
+    prohibitedSearchTotal: { type: Number, default: 0 },
+    lastProhibitedSearchAt: { type: Date, default: null },
+    updatedByAdminId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+
+AdminAuditLog.js
+    adminId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
+    actionType: {type: String, enum:["REVIEW_REPORT", "DICT_ADD", "DICT_UPDATE", "DICT_DELETE", "SEARCH_BLOCKED", "VIEW_REPORTED_DM",], required: true, index: true,},
+    targetType: {type: String, enum: ["user", "post", "event", "report", "dm", "dictionary", "search"], required: true, index: true,},
+    targetId: { type: String, default: null, index: true },
+    meta: { type: Object, default: {} },
+    createdAt: { type: Date, default: Date.now, index: true },
+
+adv.js
+    creatorId: {type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true,},
+    targetType: {type: String, enum: ["event", "liveRoom", "url"], default: "url", index: true,},
+    targetId: {type: mongoose.Schema.Types.ObjectId, default: null, index: true,},
+    startsAt: { type: Date, default: null, index: true },
+    endsAt: { type: Date, default: null, index: true },
+    title: { type: String, required: true, trim: true },
+    text: { type: String, trim: true, default: "" },
+    mediaUrl: { type: String, trim: true, default: "" },
+    targetUrl: { type: String, required: true, trim: true },
+    placement: { type: String, enum: ["feed", "pre_event", "profile"], default: "profile", index: true,},
+    isActive: { type: Boolean, default: true, index: true },
+    languages: [{ type: String, trim: true, lowercase: true }],
+    countries: [{ type: String, trim: true, uppercase: true }],
+    billingType: {type: String, enum: ["free", "paid"], default: "free", index: true, },
+    paidTokens: { type: Number, default: 0 },
+    reviewStatus: {type: String, enum: ["pending", "approved", "rejected"], default: "pending", index: true,},
+    reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    reviewedAt: { type: Date, default: null },
+    reviewNote: { type: String, default: null },
+    impressions: { type: Number, default: 0 },
+    clicks: { type: Number, default: 0 },
+
+ageGateLog.js
+    email: {type: String, required: true, lowercase: true, trim: true, index: true, unique: true,},
+    firstDobString: { type: String, default: null },
+    failedUnderageAttempts: { type: Number, default: 0 },
+    lastUnderageAttemptAt: { type: Date, default: null },
+    successDobString: { type: String, default: null },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+
+block.js
+    blockerId: {type: mongoose.Schema.Types.ObjectId, ref: "User", required: true,},
+    blockedId: {type: mongoose.Schema.Types.ObjectId, ref: "User", required: true,},
+    // Evita duplicati (A blocca B più volte)
+    blockSchema.index({ blockerId: 1, blockedId: 1 }, { unique: true });
+
+Comment.js
+    postId: {type: Schema.Types.ObjectId, ref: "Post", required: true, index: true,},
+    authorId: {type: Schema.Types.ObjectId, ref: 'User', required: true,},
+    parentCommentId: {type: Schema.Types.ObjectId, ref: "Comment", default: null,},
+    text: {type: String, required: true, trim: true, maxlength: 1000,},
+    parentCommentId: {type: Schema.Types.ObjectId, ref: "Comment", default: null, index: true,},
+    isReply: {type: Boolean, default: false, index: true,},
+
+event.js
+    creatorId: {type: mongoose.Schema.Types.ObjectId, ref: "User", required: true,},
+    area: {type: String, default: "", trim: true, lowercase: true, index: true,},
+    targetProfileType: {type: String, default: "", trim: true, lowercase: true, index: true,},
+    contentScope: {type: String, enum: ["HOT", "NON_HOT"], required: true, index: true,},
+    title: {type: String, required: true, trim: true,},
+    description: {type: String, required: true, trim: true,},
+    category: {type: String, required: true, trim: true,},
+    language: {type: String, default: "it", trim: true,},
+    coverImage: {type: String,},
+    startTime: {type: Date, required: true,},
+    durationMinutes: {type: Number, required: true, min: 0, default: 0,},
+    plannedStartTime: {type: Date,},
+    plannedDurationMinutes: {type: Number,},
+    plannedInteractionMode: {type: String, enum: ["broadcast", "interactive"],},
+    ticketPriceTokens: {type: Number, required: true, min: 0, default: 0,},
+    maxSeats: {type: Number, min: 0, default: 0, required: function () {return this.ticketPriceTokens > 0;},},
+    visibility: {type: String, enum: ["public", "followers", "unlisted"], default: "public",},
+    interactionMode: {type: String, enum: ["broadcast", "interactive"], required: true, default: "broadcast",},
+    chatEnabledForViewers: {type: Boolean, default: false,},
+    status: {type: String, enum: ["scheduled", "live", "finished", "cancelled"], default: "scheduled",},
+    startedAt: {type: Date},
+    endedAt: {type: Date},
+    cancelReason: {type: String,},
+    autoCancelled: {type: Boolean, default: false,},
+    profilePromoLeadHours: {type: Number, default: 2, min: 0, max: 48 },
+    actualLiveStartTime: {type: Date,},
+    actualLiveEndTime: {type: Date,},
+    ticketHolders: [{type: mongoose.Schema.Types.ObjectId, ref: "User",},],
+    ticketsSoldCount: {type: Number, default: 0,},
+    likesCount: {type: Number, default: 0,},
+    likedBy: [{type: mongoose.Schema.Types.ObjectId, ref: "User",}],
+    soldOutInterestCount: {type: Number, default: 0,},
+    attendedUsers: [{type: mongoose.Schema.Types.ObjectId, ref: "User",},],
+    attendedCount: {type: Number, default: 0,},
+    likesCount: {type: Number, default: 0,},
+    totalTokensEarned: {type: Number, default: 0,},
+    creatorShareTokens: {type: Number, default: 0,},
+    platformShareTokens: {type: Number, default: 0,},
+    roomId: {type: String,},
+    privateSessionCounter: { type: Number, default: 0, min: 0 },
+    privateSession: {
+      roomId: { type: String, default: null },
+      isEnabled: { type: Boolean, default: false }, // l'host ha mai usato la privata su questo evento?
+      status: {type: String, enum: ["idle", "scheduled", "running", "completed", "cancelled"], default: "idle",},
+      seats: { type: Number, default: 0, min: 0 },
+      ticketPriceTokens: { type: Number, default: 0, min: 0 }, 
+      countdownSeconds: { type: Number, default: 30, min: 0, max: 600 },
+      scheduledAt: { type: Date },
+      startedAt: { type: Date },
+    },
+    accessScope: {type: String, enum: ["public", "private"], default: "public",},
+    live: { 
+      roomId: { type: String, default: null,},
+      startedAt: {type: Date, default: null,},
+      endedAt: {type: Date, default: null,},
+      allowEarlyJoinMinutes: {type: Number, default: 10, min: 0, max: 120,},
+      chatEnabledForViewers: {type: Boolean, default: false,},
+    },
+    mutedUserIds: [{type: [mongoose.Schema.Types.ObjectId], ref: "User", default: [],},],
+    violationFlags: {
+      noShow: { type: Boolean, default: false },
+      lateStart: { type: Boolean, default: false },
+      earlyEnd: { type: Boolean, default: false },
+      chatPromiseBroken: { type: Boolean, default: false },
+    },
+    contest: {
+      isContest: {type: Boolean, default: false,},
+      type: {type: String, default:},
+      votingMode: {type: String, enum: ["none", "free", "token"], default: "none",},
+      entryFeeTokens: {type: Number, default: 0, min: 0,},
+    },
+    performers: [{
+        userId: {type: mongoose.Schema.Types.ObjectId, ref: "User", required:},
+        displayName: {type: String, default: null,},
+        order: {type: Number, default: 0,},
+        title: {type: String, default: null,},
+        isConfirmed: {type: Boolean, default: false,},
+        totalVotes: {type: Number, default: 0,},
+        totalTokenVotes: {type: Number, default: 0,},
+      },],
+    profilePromoEnabled: { type: Boolean, default: false },
+    profilePromoPublishedAt: { type: Date, default: null }, // “pubblicato nel profilo/following”
+    profilePromoLeadHours: { type: Number, default: 2, min: 0, max: 48 }, // opzionale ma utile
+
+Follow.js
+    followerId: {type: mongoose.Schema.Types.ObjectId, ref: "User", required: true,},
+    followingId: {type: mongoose.Schema.Types.ObjectId, ref: "User", required: true,},
+    status: {type: String, enum: ["pending", "accepted"], default: "accepted",},
+    requestedAt: {type: Date, default: Date.now,},
+    acceptedAt: {type: Date, default: null,},
+
+LivePresence.js
+    eventId: { type: mongoose.Schema.Types.ObjectId, ref: "Event", required: true, index: true },
+    scope: { type: String, enum: ["public", "private"], required: true, index: true },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
+    roomId: { type: String, required: true },
+    status: { type: String, enum: ["active", "left"], default: "active", index: true },
+    joinedAt: { type: Date, default: Date.now },
+    leftAt: { type: Date, default: null },
+
+LiveRoom.js
+    eventId: {type: mongoose.Schema.Types.ObjectId, ref: "Event", required: true,},
+    scope: {type: String, enum: ["public", "private"], required: true, default: "public",},
+    roomId: {type: String, required: true,},
+    hostId: {type: mongoose.Schema.Types.ObjectId, ref: "User", required: true,},
+    status: {type: String, enum: ["active", "ended"], default: "active",},
+    currentViewersCount: {type: Number, default: 0, min: 0,},
+    peakViewersCount: {type: Number, default: 0, min: 0,},
+
+message.js
+    senderId: {type: mongoose.Schema.Types.ObjectId, ref: "User", required: true,},
+    recipientId: {type: mongoose.Schema.Types.ObjectId, ref: "User", required: true,},
+    conversationKey: {type: String, index: true, required: true,},
+    text: {type: String, trim: true, default: "",},
+    hasAttachments: {type: Boolean, default: false,},
+    readAt: {type: Date, default: null,},
+    deletedForEveryoneAt: {type: Date, default: null,},
+    isDeletedForSender: {type: Boolean, default: false,},
+    isDeletedForRecipient: {type: Boolean, default: false,},
+    // helper per generare una key coerente dato due userId
+    messageSchema.statics.buildConversationKey = function (userId1, userId2) {
+    const a = userId1.toString();
+    const b = userId2.toString();
+    return a < b ? `${a}__${b}` : `${b}__${a}`;};
+
+MessageDailyCounter.js
+    userId: {type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true,},
+    dayKey: {type: String, required: true, index: true,},
+    count: {type: Number, default: 0, min: 0,},
+
+MutedUser.js
+    userId: {type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true,},
+    mutedUserId: {type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true,},
+
+notification.js
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
+    actorId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    type: {
+      type: String,
+      enum: [
+        // SOCIAL
+        "SOCIAL_FOLLOW_REQUEST", "SOCIAL_FOLLOW_ACCEPTED", "SOCIAL_FOLLOW_REJECTED", "SOCIAL_NEW_FOLLOWER", "SOCIAL_POST_LIKED", "SOCIAL_POST_COMMENTED",
+        // EVENTI
+        "EVENT_WENT_LIVE", "EVENT_CANCELLED", "EVENT_FINISHED", 
+        // TOKEN / PAGAMENTI
+        "TOKEN_RECEIVED", "TICKET_PURCHASED", "TICKET_REFUNDED",
+        // SISTEMA (già pronti, li useremo dopo)
+        "SYSTEM_PROFILE_VERIFICATION_APPROVED", "SYSTEM_PROFILE_VERIFICATION_REJECTED", "SYSTEM_TOTEM_VERIFICATION_APPROVED", "SYSTEM_TOTEM_VERIFICATION_REJECTED", "SYSTEM_VIP_CHANGED",
+        // ADV
+        "ADV_APPROVED", "ADV_REJECTED",
+        // VETRINA
+        "VETRINA_APPROVED", "VETRINA_REJECTED",
+        // ADMIN
+        "ADMIN_PROFILE_VERIFICATION_PENDING", "ADMIN_TOTEM_VERIFICATION_PENDING",
+      ],
+
+payoutRequest.js
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
+    amountTokens: { type: Number, required: true, min: 1 },
+    // payout lifecycle
+    status: {type: String, enum: ["pending", "approved", "rejected", "paid"], default: "pending", index: true,},
+    // provider info (stub)
+    provider: { type: String, enum: ["none", "stripe"], default: "none" },
+    providerTransferId: { type: String, default: null },
+    // admin review
+    reviewedByAdminId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    adminNote: { type: String, default: null },
+    requestedAt: { type: Date, default: Date.now, index: true },
+    approvedAt: { type: Date, default: null },
+    rejectedAt: { type: Date, default: null },
+    paidAt: { type: Date, default: null },
+
+Post.js
+    const MediaItemSchema = new Schema({
+    type: { type: String, enum: ["image", "video"], required: true },
+    url: { type: String, required: true },
+    thumbUrl: { type: String, default: null },
+    durationSec: { type: Number, default: null }, // solo video
+    }, { _id: false });
+
+    const PollOptionSchema = new Schema(
+    {
+        text: { type: String, trim: true, maxlength: 80, required: true },
+        votesCount: { type: Number, default: 0 },
+    }, { _id: false });
+
+    const postSchema = new Schema({
+        authorId: {type: Schema.Types.ObjectId, ref: "User", required: true, index: true,},
+        area: {type: String, default: "", trim: true, lowercase: true, index: true,},
+        language: {type: String, default: "", trim: true, lowercase: true, index: true,},
+        text: {type: String, default: "", trim: true, maxlength: 2000,},
+        media: { type: [MediaItemSchema], default: [], validate: { validator: function (arr) {return Array.isArray(arr) && arr.length <= 6;}, message: "Un post può avere al massimo 6 media.",},},
+        images: {type: [String], default: [], validate: {validator: function (arr) {return Array.isArray(arr) && arr.length <= 3;}, message: "Un post può avere al massimo 3 immagini.",},},
+        video: {type: String, default: null,},
+        poll: {
+        question: { type: String, trim: true, maxlength: 200, default: null },
+        options: {type: [PollOptionSchema], default: [],
+            validate: {validator: function (arr) {if (!this.poll || !this.poll.question) return true; return Array.isArray(arr) && arr.length >= 2 && arr.length <= 6;}, message: "Un poll deve avere da 2 a 6 opzioni.",},},
+        allowMultiple: { type: Boolean, default: false },
+        endsAt: { type: Date, default: null },},
+        location: {
+        name: { type: String, trim: true, maxlength: 120, default: null },
+        lat: { type: Number, default: null },
+        lng: { type: Number, default: null },
+        },
+        commentPolicy: {type: String, enum: ["everyone", "followers", "none"], default: "everyone",},
+        tags: {type: [String], default: [],},
+        visibility: {type: String, enum: ["public", "followers"], default: "public", index: true,},
+        likeCount: { type: Number, default: 0 },
+        commentCount: { type: Number, default: 0 },
+        viewCount: { type: Number, default: 0 },
+        score: { type: Number, default: 0 },
+    },{ timestamps: true });
+
+PostLike.js
+    postId: {type: Schema.Types.ObjectId, ref: 'Post', required: true, index: true,},
+    userId: {type: Schema.Types.ObjectId, ref: 'User', required: true, index: true,},
+
+Report.js
+    reporterId: {type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true,},
+    targetType: {type: String, enum: ["user", "post", "event"], required: true,},
+    targetId: {type: mongoose.Schema.Types.ObjectId, required: true, index: true,},
+    reason: {type: String, required: true,},
+    note: {type: String,},
+    status: {type: String, enum: ["pending", "reviewed", "dismissed", "actioned"], default: "pending", index: true,},
+
+SensitiveDictionaryEntry.js
+        // es: "y17", "ir16", "teen", "father daughter"
+    pattern: { type: String, required: true, trim: true, lowercase: true, index: true },
+    // "regex" permette pattern avanzati, "plain" = contains
+    matchType: { type: String, enum: ["plain", "regex"], default: "plain", index: true },
+    // gravità associata al match (per log / priorità)
+    severity: { type: String, enum: ["grave", "gravissimo"], default: "grave", index: true },
+    // categoria custom per recidiva (es: "minori", "incesto", "ageplay")
+    category: { type: String, default: null, trim: true, lowercase: true, index: true },
+    // attivo/disattivo senza cancellare
+    isActive: { type: Boolean, default: true, index: true },
+    // note admin
+    note: { type: String, default: null },
+    updatedByAdminId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+
+showcaseItem.js
+    creatorId: {type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true,},
+    startsAt: { type: Date, default: null, index: true },
+    endsAt: { type: Date, default: null, index: true },
+    title: { type: String, required: true, trim: true },
+    text: { type: String, trim: true, default: "" },
+    mediaUrl: { type: String, trim: true, default: "" },
+    isActive: { type: Boolean, default: true, index: true },
+    languages: [{ type: String, trim: true, lowercase: true }],
+    countries: [{ type: String, trim: true, uppercase: true }],
+    billingType: {type: String, enum: ["free", "paid"], default: "free", index: true,},
+    paidTokens: { type: Number, default: 0 },
+    reviewStatus: {type: String, enum: ["pending", "approved", "rejected"], default: "pending", index: true,},
+    reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    reviewedAt: { type: Date, default: null },
+    reviewNote: { type: String, default: null },
+    impressions: { type: Number, default: 0 },
+    clicks: { type: Number, default: 0 },
+
+ticket.js
+    eventId: {type: mongoose.Schema.Types.ObjectId, ref: "Event", required: true,},
+    userId: {type: mongoose.Schema.Types.ObjectId, ref: "User", required: true,},
+    priceTokens: {type: Number, required: true, min: 0,},
+    purchasedAt: {type: Date, default: Date.now,},
+    status: {type: String, enum: ["active", "refunded"], default: "active"},
+    scope: {type: String, enum: ["public", "private"], default: "public"},
+    roomId: {type: String, default: null},
+    refundedAt: {type: Date, default: null}
+
+tokenTransaction.js
+    fromUserId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    toUserId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    kind: {type: String, enum: ["purchase", "transfer", "ticket_purchase", "ticket_refund"], required: true,},
+    direction: {type: String, enum: ["credit", "debit"], required: true,},
+    context: {type: String, enum: ["system", "tip", "donation", "cam", "content", "ticket", "other"], default: "other",},
+    amountTokens: { type: Number, required: true, min: 0 },
+    amountEuro: { type: Number, default: 0, min: 0 },
+    eventId: { type: mongoose.Schema.Types.ObjectId, ref: "Event", default: null },
+    scope: {type: String, enum: ["public", "private"], default: null,},
+    roomId: { type: String, default: null },
+    metadata: { type: Object, default: {} },
+
+user.js
+    email: {type: String, required: true, unique: true, lowercase: true, trim: true,},
+    passwordHash: {type: String, required: true,},
+    tokenVersion: { type: Number, default: 0 },
+    displayName: {type: String, required: true, trim: true,},
+    dateOfBirth: {type: Date, required: false, default: null,},
+    adultConsentAt: {type: Date, default: null,},
+    verificationTotemStatus: {type: String, enum: ["none", "pending", "approved", "rejected"], default: "none", index: true,},
+    profileType: {type: String, enum: ["male", "female", "couple", "gay", "trans"], default: "male",},
+    area: {type: String, default: '', trim: true,},
+    bio: {type: String, default: '', maxlength: 500,},
+    interests: {type: [String], default: [],},
+    language: {type: String, default: '',},
+    avatar: {type: String, default: null },
+    coverImage: {type: String, default: null,},
+    isVip: {type: Boolean, default: false,},
+    isCreator: {type: Boolean, default: false,},
+    createdAt: {type: Date, default: Date.now,},
+    creatorEligible: { type: Boolean, default: false },
+    creatorEnabled: { type: Boolean, default: true },
+    creatorDisabledReason: { type: String, default: null },
+    creatorDisabledAt: { type: Date, default: null },
+    payoutProvider: {type: String, enum: ["none", "stripe"], default: "none",},
+    payoutAccountId: {type: String, default: null,},
+    payoutEnabled: {type: Boolean, default: false, },
+    payoutStatus: {type: String, enum: ["none", "pending", "verified", "disabled"],  default: "none",},
+    verifiedUser: {type: Boolean, default: false,},
+    verificationStatus: {type: String, enum: ["none", "pending", "approved", "rejected"], default: "none",},
+    verificationPublicVideoUrl: {type: String, default: null,},
+    verificationTotemVideoUrl: {type: String, default: null,},
+    verificationTotemDescription: {type: String, default: null,},
+    isPrivate: { type: Boolean, default: false }, 
+    accountType: {type: String, enum: ["base", "creator", "admin"], default: "base",},
+    interestsBase: {type: [String], default: [],},
+    interestsVip: {type: [String], default: [],},
+    followingIds: [{type: mongoose.Schema.Types.ObjectId, ref: "User", default: [],},],
+    followerCount: {type: Number, default: 0,},
+    followingCount: {type: Number, default: 0,},
+    location: {
+      country: { type: String, default: null },
+      region: { type: String, default: null },
+      city: { type: String, default: null },
+    },
+    languages: {type: [String], default: [],},
+    tokenBalance: {type: Number, default: 0,},
+    tokenEarnings: {type: Number, default: 0,},
+    blockedUsers: [{type: mongoose.Schema.Types.ObjectId, ref: "User",}],
+    appSettings: {
+      theme: {type: String, enum: ["light", "dark", "system"], default: "system",},
+      uiLanguage: {type: String, default: "it", trim: true,},
+      timeFormat: {type: String, enum: ["24h", "12h"], default: "24h",},
+      contentContext: {type: String, enum: ["standard", "neutral", "live_events"],  default: "standard",},
+    },

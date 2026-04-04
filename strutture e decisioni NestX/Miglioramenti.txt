@@ -1,0 +1,24 @@
+INFO DI SISTEMA PER UTENTE, Indispensabile da fare prima del lancio
+Definire in via definitiva costo token e percentuale NestX, quota di prelievo, tempistiche e in caso si voglia
+    prelevare prima del raggiungimento del minimo si applica un onere di prelievo del 10/20%
+Definire blocco utente in live e come muoversi per token spesi
+Creata rotta per pagamenti vari da applicare su varie funzioni
+Integrazione utente Vip con utente Vip Premium e Vip Premium+ (riduzione ulteriore degli ADV esterni fino alla totale scomparsa,
+    numero maggiore di propri Adv/Vetrina da mostrare in sezione visibile a tutti)
+    Controllare chi, quando e quanto spesso hai visualizzato il tuo profilo (es. Vip Premium)
+    Controllare chi hai visualizzato foto e filmati (es. Vip Premium+)
+    È possibile inviare più messaggi privati (es. 250 Vip Premium)
+    Gli annunci sono disabilitati (es. Vip ogni 25 post riduzione già implementata, Vip Premium ogni 50/70 post,
+    Vip Premium+ disabilitati)
+    Essere invisibile in chat (es. Vip Premium+)
+    Vedere se i messaggi sono stati letti (es. Premium+)
+    È possibile inviare brevi video nei messaggi (es. Vip Premium)
+Miglioramento sistema di ricerca per ora molto semplice, Miglioramento previsto ricerca anche su displayName/username
+    aggiungere tags (post/event), ranking “migliore” (engagement, follow graph, trend, ecc.), autocomplete / suggest,
+    filtri avanzati (categorie eventi, date, paese, ecc.)
+    elastic/atlas search se serve scalare (quando davvero serve), implementazioni filtri di ricerca.
+Privacy e sicurezza, implementazioni future della mail con mail di sicurezza e recovery, 2FA
+📌 Cose da segnare come “future” (Non da fare ora, ma da ricordare)
+Bypass admin totale, In futuro: solo super-admin può vedere contenuti non pubblici hard / oscurati.
+Force recalculation opzionale, ?forceTrustRecalc=1 solo per emergenze.
+Automazioni su tier, BLOCCO → auto-disable creator / shadow ban, CRITICO → warning + limitazioni progressive
