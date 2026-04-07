@@ -5,9 +5,13 @@ const User = require("../models/user");
 const auth = require("../middleware/authMiddleware");
 const Follow = require("../models/Follow");
 const { isUserBlockedEitherSide } = require("../utils/blockUtils");
-const path = require("path");
-const fs = require("fs");
 const multer = require("multer");
+const {
+  uploadBufferToR2,
+  buildObjectKey,
+  makeScopedFilename,
+  deleteFromR2ByUrl,
+} = require("../services/r2MediaService");
 const { maybeRenewVip } = require("../services/vipService");
 
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
@@ -20,40 +24,17 @@ function imageFileFilter(req, file, cb) {
   cb(null, true);
 }
 
-function makeStorage(kind) {
-  return multer.diskStorage({
-    destination: (req, file, cb) => {
-      try {
-        const meId = String(req.user?._id || "");
-        if (!meId) return cb(new Error("Unauthorized: missing user id"));
-
-        const dir = path.join(process.cwd(), "uploads", "users", meId);
-        fs.mkdirSync(dir, { recursive: true });
-        cb(null, dir);
-      } catch (e) {
-        cb(e);
-      }
-    },
-    filename: (req, file, cb) => {
-      let ext = ".jpg";
-      if (file.mimetype === "image/png") ext = ".png";
-      if (file.mimetype === "image/webp") ext = ".webp";
-      cb(null, `${kind}${ext}`); // overwrite
-    },
-  });
-}
-
 const uploadAvatar = multer({
-  storage: makeStorage("avatar"),
+  storage: multer.memoryStorage(),
   fileFilter: imageFileFilter,
   limits: { fileSize: MAX_IMAGE_SIZE },
-}).single("avatar"); // field name: avatar
+}).single("avatar");
 
 const uploadCover = multer({
-  storage: makeStorage("cover"),
+  storage: multer.memoryStorage(),
   fileFilter: imageFileFilter,
   limits: { fileSize: MAX_IMAGE_SIZE },
-}).single("cover"); // field name: cover
+}).single("cover");
 
 // GET /api/profile/me  → dati profilo corrente
 router.get("/me", auth, async (req, res) => {
@@ -600,13 +581,30 @@ router.post("/avatar", auth, (req, res) => {
       const meId = String(req.user._id);
       if (!req.file) return res.status(400).json({ status: "error", message: "Missing avatar file" });
 
-      const rel = `/uploads/users/${meId}/${req.file.filename}`;
+      const existing = await User.findById(meId).select("avatar").lean();
 
-      await User.findByIdAndUpdate(meId, { avatar: rel }, { new: true });
+      const filename = makeScopedFilename("avatar", req.file.originalname, req.file.mimetype);
+      const key = buildObjectKey({
+        userId: meId,
+        scope: "avatar",
+        filename,
+        folder: "avatar",
+      });
 
-      const base = String(process.env.APP_PUBLIC_BASE_URL || "").replace(/\/$/, "");
-      const abs = base ? `${base}${rel}` : rel;
-      return res.json({ status: "ok", avatar: abs });
+      const uploaded = await uploadBufferToR2({
+        key,
+        body: req.file.buffer,
+        contentType: req.file.mimetype,
+        cacheControl: "public, max-age=31536000, immutable",
+      });
+
+      await User.findByIdAndUpdate(meId, { avatar: uploaded.url }, { new: true });
+
+      if (existing?.avatar) {
+        deleteFromR2ByUrl(existing.avatar).catch(() => {});
+      }
+
+      return res.json({ status: "ok", avatar: uploaded.url });
     } catch (e) {
       console.error("Errore POST /api/profile/avatar:", e);
       return res.status(500).json({ status: "error", message: "Internal server error" });
@@ -623,13 +621,30 @@ router.post("/cover", auth, (req, res) => {
       const meId = String(req.user._id);
       if (!req.file) return res.status(400).json({ status: "error", message: "Missing cover file" });
 
-      const rel = `/uploads/users/${meId}/${req.file.filename}`;
+      const existing = await User.findById(meId).select("coverImage").lean();
 
-      await User.findByIdAndUpdate(meId, { coverImage: rel }, { new: true });
+      const filename = makeScopedFilename("cover", req.file.originalname, req.file.mimetype);
+      const key = buildObjectKey({
+        userId: meId,
+        scope: "cover",
+        filename,
+        folder: "cover",
+      });
 
-      const base = String(process.env.APP_PUBLIC_BASE_URL || "").replace(/\/$/, "");
-      const abs = base ? `${base}${rel}` : rel;
-      return res.json({ status: "ok", coverImage: abs });
+      const uploaded = await uploadBufferToR2({
+        key,
+        body: req.file.buffer,
+        contentType: req.file.mimetype,
+        cacheControl: "public, max-age=31536000, immutable",
+      });
+
+      await User.findByIdAndUpdate(meId, { coverImage: uploaded.url }, { new: true });
+
+      if (existing?.coverImage) {
+        deleteFromR2ByUrl(existing.coverImage).catch(() => {});
+      }
+
+      return res.json({ status: "ok", coverImage: uploaded.url });
     } catch (e) {
       console.error("Errore POST /api/profile/cover:", e);
       return res.status(500).json({ status: "error", message: "Errore interno del server" });

@@ -1,7 +1,7 @@
 require('dotenv').config();
 
 const express = require('express');
-const path = require("path");
+const { PutObjectCommand, S3Client } = require("@aws-sdk/client-s3");
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
@@ -65,14 +65,64 @@ const authRoutes = require('./routes/auth.routes');
 
 const app = express();
 
+function getRequiredEnv(name) {
+  const v = String(process.env[name] || "").trim();
+  if (!v) throw new Error(`Missing required env: ${name}`);
+  return v;
+}
+
+function getR2Client() {
+  const accountId = getRequiredEnv("R2_ACCOUNT_ID");
+  const accessKeyId = getRequiredEnv("R2_ACCESS_KEY_ID");
+  const secretAccessKey = getRequiredEnv("R2_SECRET_ACCESS_KEY");
+
+  return new S3Client({
+    region: "auto",
+    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+    credentials: {
+      accessKeyId,
+      secretAccessKey,
+    },
+  });
+}
+
+const r2BootstrapEnabled =
+  !!String(process.env.R2_ACCOUNT_ID || "").trim() &&
+  !!String(process.env.R2_ACCESS_KEY_ID || "").trim() &&
+  !!String(process.env.R2_SECRET_ACCESS_KEY || "").trim() &&
+  !!String(process.env.R2_BUCKET || "").trim();
+
 // Connessione a MongoDB
 mongoose.connect(process.env.MONGODB_URI)
-  .then(() => {
+  .then(async () => {
     console.log('✅ Connesso a MongoDB Atlas');
+
+    if (r2BootstrapEnabled) {
+      try {
+        const client = getR2Client();
+        await client.send(
+          new PutObjectCommand({
+            Bucket: process.env.R2_BUCKET,
+            Key: "__healthcheck__/boot.txt",
+            Body: Buffer.from(`NestX R2 bootstrap ${new Date().toISOString()}`),
+            ContentType: "text/plain",
+          })
+        );
+        console.log("✅ R2 bootstrap OK");
+      } catch (e) {
+        console.error("❌ R2 bootstrap failed:", e.message);
+        process.exit(1);
+      }
+    } else {
+      console.error("❌ R2 env missing");
+      process.exit(1);
+    }
+
     startNativePrivateReleaseJob();
   })
   .catch((err) => {
     console.error('❌ Errore connessione MongoDB:', err.message);
+    process.exit(1);
   });
 
 app.use("/api/webhooks", stripeWebhookRoutes);
@@ -82,12 +132,6 @@ app.use("/api/webhooks", stripeWebhookRoutes);
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
-const UPLOADS_DIR = process.env.UPLOADS_DIR
-  ? path.resolve(process.env.UPLOADS_DIR)
-  : path.join(process.cwd(), "uploads");
-
-app.use("/uploads", express.static(UPLOADS_DIR));
 
 // router
 app.use('/api/auth', authRoutes);

@@ -222,6 +222,8 @@ const EventSchema = new mongoose.Schema(
 
     privateSession: {
       roomId: { type: String, default: null },
+      meetingId: { type: String, default: null },
+      provider: { type: String, default: "cloudflare" },
       isEnabled: { type: Boolean, default: false },
       status: {
         type: String,
@@ -274,6 +276,14 @@ const EventSchema = new mongoose.Schema(
         type: String,
         default: null,
       },
+      meetingId: {
+        type: String,
+        default: null,
+      },
+      provider: {
+        type: String,
+        default: "cloudflare",
+      },
       startedAt: {
         type: Date,
         default: null,
@@ -290,7 +300,7 @@ const EventSchema = new mongoose.Schema(
       },
       chatEnabledForViewers: {
         type: Boolean,
-        default: false, // di base gli spettatori NON possono chattare
+        default: false,
       },
     },
     

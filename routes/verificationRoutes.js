@@ -265,6 +265,13 @@ router.post("/creator/request", authMiddleware, async (req, res) => {
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ status: "error", message: "User not found" });
 
+    if (user.accountType === "admin") {
+      return res.status(403).json({
+        status: "error",
+        message: "Admins cannot become creators",
+      });
+    }
+
     // already approved -> idempotent
     if (user.creatorVerification?.status === "approved") {
       return res.json({

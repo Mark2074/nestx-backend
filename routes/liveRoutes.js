@@ -18,6 +18,10 @@ const Report = require("../models/Report");
 const Notification = require("../models/notification");
 const AdminAuditLog = require("../models/AdminAuditLog");
 const User = require("../models/user");
+const {
+  ensureMeetingForRoom,
+  createParticipantToken,
+} = require("../services/realtimeKitService");
 
 // helper: normalizza scope (public/private)
 function getScopeFromReq(req) {
@@ -262,6 +266,134 @@ async function createOrUpdateAILiveReport({
 
   return report;
 }
+
+/**
+ * @route POST /api/live/token
+ * @desc Generate Cloudflare Realtime participant token for the authorized live room
+ * @access Private
+ */
+router.post("/token", auth, featureGuard("live"), async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({
+        status: "error",
+        message: "Unauthenticated user",
+      });
+    }
+
+    const eventId = String(req.body?.eventId || "").trim();
+    if (!eventId || eventId.length < 10) {
+      return res.status(400).json({
+        status: "error",
+        message: "Invalid event ID",
+      });
+    }
+
+    const requestedScope = getScopeFromReq(req);
+
+    const event = await Event.findById(eventId).exec();
+    if (!event) {
+      return res.status(404).json({
+        status: "error",
+        message: "Event not found",
+      });
+    }
+
+    if (String(event.status || "") !== "live") {
+      return res.status(409).json({
+        status: "error",
+        code: "EVENT_NOT_LIVE",
+        message: "Event is not live",
+      });
+    }
+
+    const access = await checkEventAccess({
+      event,
+      userId: user._id,
+      requestedScope,
+      accountType: user.accountType,
+    });
+
+    if (!access.canEnter) {
+      return res.status(403).json({
+        status: "error",
+        code: access.reason || "ACCESS_DENIED",
+        message: "Access denied",
+      });
+    }
+
+    const effectiveScope = access.authorizedScope;
+    if (!effectiveScope || (effectiveScope !== "public" && effectiveScope !== "private")) {
+      return res.status(403).json({
+        status: "error",
+        code: "ACCESS_DENIED",
+        message: "Access denied",
+      });
+    }
+
+    const isHost = String(user._id) === String(event.creatorId);
+    const isAdmin = String(user.accountType || "").toLowerCase() === "admin";
+    const role = isHost ? "host" : "viewer";
+
+    const ensuredMeeting = await ensureMeetingForRoom({
+      event,
+      scope: effectiveScope,
+    });
+
+    const participant = await createParticipantToken({
+      meetingId: ensuredMeeting.meetingId,
+      user,
+      role,
+    });
+
+    return res.status(200).json({
+      status: "success",
+      data: {
+        eventId: String(event._id),
+        requestedScope,
+        authorizedScope: effectiveScope,
+        scope: effectiveScope,
+        roomId:
+          effectiveScope === "private"
+            ? (event?.privateSession?.roomId || access.authorizedRoomId || null)
+            : (event?.live?.roomId || String(event._id)),
+        provider: "cloudflare",
+        meetingId: ensuredMeeting.meetingId,
+        authToken: participant.token,
+        participantId: participant.participantId,
+        participantPreset: participant.presetName,
+        role,
+        isHost,
+        isAdmin,
+        viewerCountMode: "nestx_presence",
+      },
+    });
+  } catch (err) {
+    console.error("Error during live token generation:", err);
+
+    if (err?.code === "MISSING_ENV") {
+      return res.status(500).json({
+        status: "error",
+        code: "REALTIME_CONFIG_MISSING",
+        message: err.message,
+      });
+    }
+
+    if (err?.code === "CF_API_ERROR") {
+      return res.status(502).json({
+        status: "error",
+        code: "REALTIME_PROVIDER_ERROR",
+        message: "Cloudflare Realtime error",
+      });
+    }
+
+    return res.status(500).json({
+      status: "error",
+      message: "Internal error while generating live token",
+    });
+  }
+});
 
 /**
  * @route   POST /api/live/:eventId/join-room

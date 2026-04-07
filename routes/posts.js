@@ -15,9 +15,15 @@ const { isUserBlockedEitherSide } = require("../utils/blockUtils");
 const ActionAuditLog = require("../models/ActionAuditLog");
 const AdminAuditLog = require("../models/AdminAuditLog");
 const PollVote = require("../models/PollVote");
-const path = require("path");
 const fs = require("fs");
+const os = require("os");
+const path = require("path");
 const multer = require("multer");
+const {
+  uploadBufferToR2,
+  buildObjectKey,
+  makeScopedFilename,
+} = require("../services/r2MediaService");
 const { detectContentSafety } = require("../utils/contentSafety");
 const { analyzeTextModeration } = require("../services/moderationService");
 const Report = require("../models/Report");
@@ -47,9 +53,18 @@ function ffprobeDurationSeconds(filePath) {
   });
 }
 
+function writeTempBufferToFile(buffer, originalName = "upload.bin") {
+  const ext = path.extname(originalName || "") || ".bin";
+  const tmpFile = path.join(os.tmpdir(), `nestx_${Date.now()}_${Math.random().toString(16).slice(2)}${ext}`);
+  fs.writeFileSync(tmpFile, buffer);
+  return tmpFile;
+}
+
 function deleteUploadedFiles(files) {
   for (const f of files || []) {
-    try { fs.unlinkSync(f.path); } catch (_) {}
+    try {
+      if (f?.path && fs.existsSync(f.path)) fs.unlinkSync(f.path);
+    } catch (_) {}
   }
 }
 
@@ -212,38 +227,12 @@ async function createOrUpdateAIReport({
 // =========================
 
 // folder: /uploads/posts/{userId}/
-function ensureDir(p) {
-  if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
-}
-
-function safeFileName(original) {
-  const ext = path.extname(original || "").toLowerCase().slice(0, 12);
-  const base = path
-    .basename(original || "file", ext)
-    .replace(/[^a-z0-9_\-\.]/gi, "_")
-    .slice(0, 60);
-  return `${Date.now()}_${Math.random().toString(16).slice(2)}_${base}${ext || ""}`;
-}
-
 const ALLOWED_IMAGE = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
 const ALLOWED_VIDEO = new Set(["video/mp4", "video/webm", "video/quicktime"]);
 
-const uploadStorage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    const userId = String(req.user?._id || "anon");
-    const dir = path.join(__dirname, "..", "uploads", "posts", userId);
-    ensureDir(dir);
-    cb(null, dir);
-  },
-  filename: function (req, file, cb) {
-    cb(null, safeFileName(file.originalname));
-  },
-});
-
 const upload = multer({
-  storage: uploadStorage,
+  storage: multer.memoryStorage(),
   limits: {
-    // Phase 1: max 30MB per file
     fileSize: 30 * 1024 * 1024,
     files: 6,
   },
@@ -272,21 +261,23 @@ router.post("/media/upload", auth, upload.array("files", 6), async (req, res) =>
         const isVideo = mt.startsWith("video/");
         if (!isVideo) continue;
 
-        const duration = await ffprobeDurationSeconds(f.path);
-        if (duration > maxSeconds) {
-          deleteUploadedFiles(files);
+        const tmpPath = writeTempBufferToFile(f.buffer, f.originalname || "upload.bin");
+        try {
+          const duration = await ffprobeDurationSeconds(tmpPath);
+          if (duration > maxSeconds) {
+            const msgBase = "Video is too long. Max duration is 1 minute (VIP can upload up to 3 minutes).";
+            const msgVip = "Video is too long. Max duration is 3 minutes.";
 
-          const msgBase = "Video is too long. Max duration is 1 minute (VIP can upload up to 3 minutes).";
-          const msgVip = "Video is too long. Max duration is 3 minutes.";
-
-          return res.status(400).json({
-            status: "error",
-            message: isVip ? msgVip : msgBase,
-          });
+            return res.status(400).json({
+              status: "error",
+              message: isVip ? msgVip : msgBase,
+            });
+          }
+        } finally {
+          try { fs.unlinkSync(tmpPath); } catch (_) {}
         }
       }
     } catch (err) {
-      deleteUploadedFiles(files);
       return res.status(500).json({ status: "error", message: "Video duration check failed." });
     }
 
@@ -298,13 +289,27 @@ router.post("/media/upload", auth, upload.array("files", 6), async (req, res) =>
       return res.status(400).json({ status: "error", message: "No files uploaded" });
     }
 
-    const items = files.map((f) => {
-      const mt = String(f.mimetype || "");
+    const items = [];
+    for (const f of files) {
+      const mt = String(f.mimetype || "").toLowerCase();
       const type = ALLOWED_VIDEO.has(mt) ? "video" : "image";
-      // serve static: /uploads/posts/{userId}/{filename}
-      const url = `/uploads/posts/${userId}/${f.filename}`;
-      return { type, url };
-    });
+
+      const filename = makeScopedFilename("post", f.originalname, mt);
+      const key = buildObjectKey({
+        userId,
+        scope: "post",
+        filename,
+        folder: "posts",
+      });
+
+      const uploaded = await uploadBufferToR2({
+        key,
+        body: f.buffer,
+        contentType: mt || "application/octet-stream",
+      });
+
+      items.push({ type, url: uploaded.url });
+    }
 
     return res.json({ status: "success", items });
   } catch (err) {
@@ -523,12 +528,16 @@ router.post("/", auth, async (req, res) => {
     const meId = String(req.user?._id || "");
 
     function isAllowedPostMediaUrl(url) {
-      const u = String(url || "");
-      // allow both relative and absolute, but must contain one of these paths:
-      return (
-        u.includes(`/uploads/posts/${meId}/`) ||              // legacy posts upload
-        u.includes(`/uploads/users/${meId}/posts/`)           // new /api/media/upload?scope=post
-      );
+      const u = String(url || "").trim();
+      const r2Base = String(process.env.R2_PUBLIC_BASE_URL || "").replace(/\/+$/, "");
+
+      if (!u) return false;
+
+      if (r2Base && u.startsWith(`${r2Base}/users/${meId}/posts/`)) {
+        return true;
+      }
+
+      return false;
     }
 
     for (const m of normalizedMedia) {

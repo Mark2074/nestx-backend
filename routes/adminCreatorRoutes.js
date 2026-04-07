@@ -108,12 +108,23 @@ router.patch("/creator/:userId/approve", auth, adminGuard, async (req, res) => {
     const u = await User.findById(userId).select("isCreator accountType creatorEnabled creatorVerification payoutEnabled payoutStatus");
     if (!u) return res.status(404).json({ status: "error", message: "User not found" });
 
+    if (u.accountType === "admin") {
+      return res.status(403).json({
+        status: "error",
+        message: "Admins cannot become creators",
+      });
+    }
+
     if (u.creatorVerification?.status !== "pending") {
       return res.status(409).json({ status: "error", message: "Creator request is not pending" });
     }
 
     u.isCreator = true;
-    u.accountType = "creator";
+
+    if (u.accountType !== "admin") {
+      u.accountType = "creator";
+    }
+
     u.creatorEnabled = true;
     u.creatorDisabledReason = null;
     u.creatorDisabledAt = null;
