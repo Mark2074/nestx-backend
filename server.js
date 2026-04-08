@@ -92,6 +92,17 @@ const r2BootstrapEnabled =
   !!String(process.env.R2_SECRET_ACCESS_KEY || "").trim() &&
   !!String(process.env.R2_BUCKET || "").trim();
 
+const fs = require("fs");
+const path = require("path");
+const ffprobePath = require("ffprobe-static").path;
+
+try {
+  fs.chmodSync(ffprobePath, 0o755);
+  console.log("ffprobe permissions fixed");
+} catch (e) {
+  console.error("ffprobe chmod error:", e.message);
+}
+
 // Connessione a MongoDB
 mongoose.connect(process.env.MONGODB_URI)
   .then(async () => {
