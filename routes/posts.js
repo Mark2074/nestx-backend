@@ -1181,6 +1181,17 @@ router.get("/feed/fed", auth, async (req, res) => {
       .filter((f) => !f.status || f.status === "accepted")
       .map((f) => f.followingId);
 
+    // autori privati che NON seguo
+    const privateUsers = await User.find(
+      {
+        isPrivate: true,
+        _id: { $nin: [meObjectId, ...followingAcceptedIds] },
+      },
+      { _id: 1 }
+    ).lean();
+
+    const privateExcludedIds = privateUsers.map((u) => u._id);
+
     // privacy
     const visibilityQuery = {
       "moderation.isDeleted": { $ne: true },
@@ -1193,8 +1204,20 @@ router.get("/feed/fed", auth, async (req, res) => {
     };
 
     // hard exclude
+    const excludedAuthorIds = [
+      ...mutedDocs.map((m) => m.mutedUserId),
+      ...blocks.flatMap((b) => {
+        const out = [];
+        if (String(b.blockerId) === meId) out.push(b.blockedId);
+        if (String(b.blockedId) === meId) out.push(b.blockerId);
+        return out;
+      }),
+      ...privateExcludedIds,
+      meObjectId,
+    ];
+
     const excludeAuthors = {
-      authorId: { $nin: [...mutedIds, ...blockedIds, meId] },
+      authorId: { $nin: excludedAuthorIds },
     };
 
     // retrieval
