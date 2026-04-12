@@ -1146,7 +1146,7 @@ router.post("/:id/private/schedule", auth, featureGuard("live"), async (req, res
  * @desc    Buyer buys private slot (reserve) during public live
  * @access  Private
  */
-router.post("/:id/private/buy", auth, featureGuard("live"), featureGuard("tokens"), async (req, res) => {
+router.post("/:id/private/buy", auth, featureGuard("live"), async (req, res) => {
   const session = await mongoose.startSession();
   try {
     const user = req.user;
@@ -1293,6 +1293,26 @@ router.post("/:id/private/buy", auth, featureGuard("live"), featureGuard("tokens
 
         const e = new Error("Private must be paid");
         e.httpStatus = 400; e.payload = { status: "error", code: "PRIVATE_SESSION_NOT_PAID", message: "Private session cannot be free" };
+        throw e;
+      }
+
+      if (!tokensRuntimeEnabled()) {
+        logPrivateFlow("ERROR", {
+          route: "POST /api/events/:id/private/buy",
+          eventId: String(eventId || ""),
+          buyerId: String(user?._id || ""),
+          creatorId: String(event.creatorId || ""),
+          code: "TOKENS_DISABLED",
+          roomId: String(ps?.roomId || ""),
+        });
+
+        const e = new Error("Tokens disabled");
+        e.httpStatus = 403;
+        e.payload = {
+          status: "error",
+          code: "TOKENS_DISABLED",
+          message: "Private purchase is currently disabled",
+        };
         throw e;
       }
 
@@ -3580,7 +3600,7 @@ router.get("/:id", auth, featureGuard("live"), async (req, res) => {
  * @desc    Acquista un ticket per un evento
  * @access  Private (base, vip, creator) - ma non il creator dell'evento stesso
  */
-router.post("/:id/ticket", auth, featureGuard("live"), featureGuard("tokens"), async (req, res) => {
+router.post("/:id/ticket", auth, featureGuard("live"), async (req, res) => {
   try {
     const user = req.user;
     const eventId = req.params.id;
@@ -3672,19 +3692,37 @@ router.post("/:id/ticket", auth, featureGuard("live"), featureGuard("tokens"), a
     }
 
     // evento non acquistabile
-    if (["cancelled", "finished"].includes(event.status)) {
+    if (event.status === "cancelled") {
       logTicketFlow("ERROR", {
         route: "POST /api/events/:id/ticket",
         eventId: String(event._id || ""),
         buyerId: String(user?._id || ""),
         creatorId: String(event.creatorId || ""),
-        code: "EVENT_NOT_PURCHASABLE",
+        code: "EVENT_CANCELLED",
         eventStatus: String(event.status || ""),
       });
 
       return res.status(400).json({
         status: "error",
-        message: "Tickets cannot be purchased for this event.",
+        code: "EVENT_CANCELLED",
+        message: "Event cancelled",
+      });
+    }
+
+    if (event.status === "finished") {
+      logTicketFlow("ERROR", {
+        route: "POST /api/events/:id/ticket",
+        eventId: String(event._id || ""),
+        buyerId: String(user?._id || ""),
+        creatorId: String(event.creatorId || ""),
+        code: "EVENT_FINISHED",
+        eventStatus: String(event.status || ""),
+      });
+
+      return res.status(400).json({
+        status: "error",
+        code: "EVENT_FINISHED",
+        message: "Event finished",
       });
     }
 
@@ -3694,13 +3732,27 @@ router.post("/:id/ticket", auth, featureGuard("live"), featureGuard("tokens"), a
     // Private interna dentro live public
     if (isEmbeddedPrivateSession) {
       if (!privateSession || privateSession.isEnabled !== true) {
-        return res.status(400).json({ status: "error", message: "Private session not active" });
+        return res.status(400).json({
+          status: "error",
+          code: "PRIVATE_NOT_ACTIVE",
+          message: "Private session not active",
+        });
       }
+
       if (!["scheduled", "running"].includes(privateSession.status)) {
-        return res.status(400).json({ status: "error", message: "Private session not available" });
+        return res.status(400).json({
+          status: "error",
+          code: "PRIVATE_NOT_AVAILABLE",
+          message: "Private session not available",
+        });
       }
+
       if (!privateSession.roomId) {
-        return res.status(400).json({ status: "error", message: "Invalid private room" });
+        return res.status(400).json({
+          status: "error",
+          code: "PRIVATE_INVALID_ROOM",
+          message: "Private session not available",
+        });
       }
     }
 
