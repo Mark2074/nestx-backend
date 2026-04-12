@@ -11,7 +11,6 @@ const TokenTransaction = require("../models/tokenTransaction");
 const mongoose = require("mongoose");
 const crypto = require("crypto");
 const { reserveUserTokensBuckets } = require("../services/tokenDebitService");
-const featureGuard = require("../middleware/featureGuard");
 
 // --- VETRINA rules ---
 const VETRINA_FREE_ACTIVE = 2;
@@ -110,7 +109,7 @@ async function ensureVipOnly(req, res, next) {
  * Regola: 2 slot free attivi (approved). Oltre -> paid (30 token) con conferma.
  * Pagamento: NON qui. Si scala token SOLO in admin approve (come ADV).
  */
-router.post("/item", auth, featureGuard("tokens"), ensureVipOnly, async (req, res) => {
+router.post("/item", auth, ensureVipOnly, async (req, res) => {
   try {
     const body = req.body || {};
 
@@ -180,6 +179,19 @@ router.post("/item", auth, featureGuard("tokens"), ensureVipOnly, async (req, re
     if (freeActiveCount >= VETRINA_FREE_ACTIVE) {
       billingType = "paid";
       paidTokens = VETRINA_PAID_PRICE_TOKENS;
+
+      const tokensEnabled =
+        String(process.env.TOKENS_ENABLED || "").toLowerCase() === "true";
+      const economyEnabled =
+        String(process.env.ECONOMY_ENABLED || "").toLowerCase() === "true";
+
+      if (!tokensEnabled || !economyEnabled) {
+        return res.status(403).json({
+          status: "error",
+          code: "SHOWCASE_PAID_DISABLED",
+          message: "Paid Showcase slots are currently disabled by NestX.",
+        });
+      }
 
       // check saldo (solo per evitare che confermi inutilmente)
       const me = await User.findById(creatorId)

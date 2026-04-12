@@ -7,7 +7,6 @@ const User = require('../models/user');
 const Notification = require('../models/notification');
 const { getBlockedUserIds, isUserBlockedEitherSide } = require("../utils/blockUtils");
 const crypto = require("crypto");
-const featureGuard = require("../middleware/featureGuard");
 const Event = require("../models/event");
 const LiveRoom = require("../models/LiveRoom");
 const TokenTransaction = require("../models/tokenTransaction");
@@ -113,7 +112,7 @@ async function ensureCreator(req, res, next) {
  * Crea una nuova campagna ADV
  * (uso interno / di test: in produzione la useremo dietro pannello admin)
 */
-router.post('/campaign', auth, featureGuard("tokens"), ensureCreator, async (req, res) => {
+router.post('/campaign', auth, ensureCreator, async (req, res) => {
   try {
     const {
       title,
@@ -332,6 +331,19 @@ router.post('/campaign', auth, featureGuard("tokens"), ensureCreator, async (req
     if (totalCountToday >= ADV_FREE_PER_DAY) {
       billingType = "paid";
       paidTokens = ADV_PAID_PRICE_TOKENS;
+
+      const tokensEnabled =
+        String(process.env.TOKENS_ENABLED || "").toLowerCase() === "true";
+      const economyEnabled =
+        String(process.env.ECONOMY_ENABLED || "").toLowerCase() === "true";
+
+      if (!tokensEnabled || !economyEnabled) {
+        return res.status(403).json({
+          status: "error",
+          code: "ADV_PAID_DISABLED",
+          message: "Paid ADV campaigns are currently disabled by NestX.",
+        });
+      }
 
       const me = await User.findById(creatorId)
         .select("tokenPurchased tokenEarnings tokenRedeemable")
