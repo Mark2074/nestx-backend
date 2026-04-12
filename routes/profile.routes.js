@@ -426,6 +426,16 @@ router.get("/public/:id", auth, async (req, res) => {
     }
 
     const meId = req.user?._id?.toString();
+    const isAdminViewer = req.user?.accountType === "admin";
+
+    // 🔒 BANNED INVISIBLE TO NORMAL USERS
+    if (!isAdminViewer && user?.isBanned === true) {
+      return res.status(404).json({
+        status: "error",
+        code: "USER_NOT_FOUND",
+        message: "User not found",
+      });
+    }
 
     // 🔒 BLOCK GUARD (either side) — prima di privacy
     if (meId) {
@@ -442,8 +452,6 @@ router.get("/public/:id", auth, async (req, res) => {
     // 🔐 PRIVACY: return profile header but lock content until accepted
     let followStatus = "none";
     let isLocked = false;
-
-    const isAdminViewer = req.user?.accountType === "admin";
 
     if (
       !isAdminViewer &&

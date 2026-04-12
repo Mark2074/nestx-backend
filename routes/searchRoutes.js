@@ -62,19 +62,28 @@ async function buildExcludedUserIds(meId, options = {}) {
   );
 
   let privateNotAllowed = [];
+  let bannedIds = [];
 
   if (!isAdmin) {
-    const privateNotAllowedDocs = await User.find({
-      isPrivate: true,
-      _id: { $nin: allowedPrivateObjIds },
-    })
-      .select("_id")
-      .lean();
+    const [privateNotAllowedDocs, bannedDocs] = await Promise.all([
+      User.find({
+        isPrivate: true,
+        _id: { $nin: allowedPrivateObjIds },
+      })
+        .select("_id")
+        .lean(),
+      User.find({
+        isBanned: true,
+      })
+        .select("_id")
+        .lean(),
+    ]);
 
     privateNotAllowed = privateNotAllowedDocs.map((u) => String(u._id));
+    bannedIds = bannedDocs.map((u) => String(u._id));
   }
 
-  const excluded = new Set([...blockedSet, ...privateNotAllowed]);
+  const excluded = new Set([...blockedSet, ...privateNotAllowed, ...bannedIds]);
   excluded.delete(String(meId)); // io posso sempre vedermi
   return Array.from(excluded);
 }
@@ -255,12 +264,21 @@ router.get("/search", auth, async (req, res) => {
     const adminUsers = await User.find({ accountType: "admin" }).select("_id").lean();
     const adminIds = adminUsers.map((u) => String(u._id));
 
+    let bannedIds = [];
+    if (!isAdmin) {
+      const bannedUsers = await User.find({ isBanned: true }).select("_id").lean();
+      bannedIds = bannedUsers.map((u) => String(u._id));
+    }
+
     // EXCLUSIONS:
-    // - USERS: exclude only blocked + admin (private users must still appear in search)
-    // - POSTS/EVENTS: exclude blocked + privateNotAllowed + admin
-    const finalExcludedUserIdsUsers = Array.from(new Set([...blockedIds, ...adminIds]));
+    // - USERS: blocked + admin + banned
+    // - POSTS/EVENTS: blocked + privateNotAllowed + admin + banned
+    const finalExcludedUserIdsUsers = Array.from(
+      new Set([...blockedIds, ...adminIds, ...bannedIds])
+    );
+
     const finalExcludedUserIdsPostsEvents = Array.from(
-      new Set([...excludedUserIds.map(String), ...adminIds])
+      new Set([...excludedUserIds.map(String), ...adminIds, ...bannedIds])
     );
 
     const finalExcludedObjIdsUsers = finalExcludedUserIdsUsers
