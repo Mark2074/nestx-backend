@@ -903,11 +903,11 @@ router.get("/me", auth, async (req, res) => {
   try {
     const { limit, skip, page } = getPaginationParams(req);
 
-    const baseQuery = { authorId: req.user._id, "moderation.isDeleted": { $ne: true } };
-
-    // ✅ exclude hidden posts (Phase 1)
-    baseQuery.isHidden = { $ne: true };
-    baseQuery["moderation.status"] = { $ne: "hidden" };
+    const baseQuery = {
+      authorId: req.user._id,
+      "moderation.isDeleted": { $ne: true },
+      isHidden: { $ne: true },
+    };
 
     const [posts, total] = await Promise.all([
       Post.find(baseQuery)
