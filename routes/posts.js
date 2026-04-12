@@ -341,6 +341,27 @@ function getPaginationParams(req) {
     return { page, limit, skip };
 }
 
+function isUserDeletedLike(user) {
+  return user?.isDeleted === true || !!user?.deletedAt;
+}
+
+async function getNonPublicAuthorIds({ isAdminViewer = false } = {}) {
+  if (isAdminViewer) return [];
+
+  const docs = await User.find({
+    $or: [
+      { accountType: "admin" },
+      { isBanned: true },
+      { isDeleted: true },
+      { deletedAt: { $ne: null } },
+    ],
+  })
+    .select("_id")
+    .lean();
+
+  return docs.map((u) => u._id);
+}
+
 function pickEventStartEnd(ev) {
   const start =
     ev?.liveMeta?.startedAt ||
@@ -380,13 +401,26 @@ function isEventVisibleNow(ev, nowMs) {
   return false;
 }
 
-async function guardPostAccessForComments({ meId, post }) {
+async function guardPostAccessForComments({ meId, post, viewerAccountType = "" }) {
   const meIdStr = String(meId);
   const authorIdStr = String(post.authorId);
+  const isAdminViewer = String(viewerAccountType || "").toLowerCase() === "admin";
 
-  // admin invisibile (autore admin => fingi non esista)
-  const author = await User.findById(post.authorId).select("accountType isPrivate").lean();
+  const author = await User.findById(post.authorId)
+    .select("accountType isPrivate isBanned isDeleted deletedAt")
+    .lean();
+
+  if (!author) {
+    return { ok: false, status: 404, code: "POST_NOT_FOUND", message: "Post not found" };
+  }
+
+  // admin-authored content stays invisible in social/public flows
   if (author?.accountType === "admin") {
+    return { ok: false, status: 404, code: "POST_NOT_FOUND", message: "Post not found" };
+  }
+
+  // banned/deleted invisible to normal users
+  if (!isAdminViewer && (author?.isBanned === true || isUserDeletedLike(author))) {
     return { ok: false, status: 404, code: "POST_NOT_FOUND", message: "Post not found" };
   }
 
@@ -405,6 +439,11 @@ async function guardPostAccessForComments({ meId, post }) {
   }
 
   const isOwner = meIdStr === authorIdStr;
+
+  // admin moderation bypass
+  if (isAdminViewer) {
+    return { ok: true, isOwner };
+  }
 
   // followers-only post
   if (post.visibility === "followers" && !isOwner) {
@@ -918,14 +957,33 @@ router.get("/user/:userId", auth, async (req, res) => {
     // ✅ PRIVACY GUARD: se profilo privato, i post sono visibili solo a:
     // - owner
     // - follower accepted
-    const targetUser = await User.findById(userId).select("_id isPrivate").lean();
+    const targetUser = await User.findById(userId)
+      .select("_id isPrivate accountType isBanned isDeleted deletedAt")
+      .lean();
     if (!targetUser) {
       return res.status(404).json({ status: "error", message: "User not found" });
     }
 
+    const isAdminViewer = String(req.user?.accountType || "").toLowerCase() === "admin";
+
+    if (
+      !isAdminViewer &&
+      (
+        targetUser?.accountType === "admin" ||
+        targetUser?.isBanned === true ||
+        isUserDeletedLike(targetUser)
+      )
+    ) {
+      return res.status(404).json({
+        status: "error",
+        code: "USER_NOT_FOUND",
+        message: "User not found",
+      });
+    }
+
     const isOwner = meId && meId === String(targetUser._id);
 
-    if (targetUser.isPrivate === true && !isOwner) {
+    if (!isAdminViewer && targetUser.isPrivate === true && !isOwner) {
       const canSee = await Follow.findOne({
         followerId: req.user._id,
         followingId: targetUser._id,
@@ -1016,12 +1074,14 @@ router.get("/feed/fedbase", auth, async (req, res) => {
       if (String(b.blockedId) === String(meId)) blockedSet.add(String(b.blockerId));
     }
     const blockedUserIds = Array.from(blockedSet);
+    const isAdminViewer = String(req.user?.accountType || "").toLowerCase() === "admin";
+    const hiddenAuthorIds = await getNonPublicAuthorIds({ isAdminViewer });
 
     // 2) query base + filtro mute + filtro block
     const baseQuery = {
       visibility: "public",
       "moderation.isDeleted": { $ne: true },
-      authorId: { $nin: [...mutedUserIds, ...blockedUserIds] },
+      authorId: { $nin: [...mutedUserIds, ...blockedUserIds, ...hiddenAuthorIds] },
     };
 
     // ✅ exclude hidden posts (Phase 1)
@@ -1084,13 +1144,15 @@ router.get('/feed/fedvip', auth, async (req, res) => {
       if (String(b.blockedId) === String(meId)) blockedSet.add(String(b.blockerId));
     }
     const blockedUserIds = Array.from(blockedSet);
+    const isAdminViewer = String(req.user?.accountType || "").toLowerCase() === "admin";
+    const hiddenAuthorIds = await getNonPublicAuthorIds({ isAdminViewer });
 
     const query = {
       visibility: "public",
       "moderation.isDeleted": { $ne: true },
       isHidden: { $ne: true },
       "moderation.status": "visible",
-      authorId: { $nin: [...mutedUserIds, ...blockedUserIds] },
+      authorId: { $nin: [...mutedUserIds, ...blockedUserIds, ...hiddenAuthorIds] },
     };
 
     if (interestsVip.length > 0) {
@@ -1127,6 +1189,7 @@ router.get("/feed/fed", auth, async (req, res) => {
 
     const contentContext = req.user?.appSettings?.contentContext || "standard";
     const isVip = req.user?.isVip === true;
+    const isAdminViewer = String(req.user?.accountType || "").toLowerCase() === "admin";
 
     const interestsVip = Array.isArray(req.user?.interestsVip) ? req.user.interestsVip : [];
     const interestsBase = Array.isArray(req.user?.interestsBase) ? req.user.interestsBase : [];
@@ -1181,16 +1244,22 @@ router.get("/feed/fed", auth, async (req, res) => {
       .filter((f) => !f.status || f.status === "accepted")
       .map((f) => f.followingId);
 
-    // autori privati che NON seguo
-    const privateUsers = await User.find(
-      {
-        isPrivate: true,
-        _id: { $nin: [meObjectId, ...followingAcceptedIds] },
-      },
-      { _id: 1 }
-    ).lean();
+    const hiddenAuthorIds = await getNonPublicAuthorIds({ isAdminViewer });
 
-    const privateExcludedIds = privateUsers.map((u) => u._id);
+    // autori privati che NON seguo
+    let privateExcludedIds = [];
+
+    if (!isAdminViewer) {
+      const privateUsers = await User.find(
+        {
+          isPrivate: true,
+          _id: { $nin: [meObjectId, ...followingAcceptedIds] },
+        },
+        { _id: 1 }
+      ).lean();
+
+      privateExcludedIds = privateUsers.map((u) => u._id);
+    }
 
     // privacy
     const visibilityQuery = {
@@ -1213,6 +1282,7 @@ router.get("/feed/fed", auth, async (req, res) => {
         return out;
       }),
       ...privateExcludedIds,
+      ...hiddenAuthorIds,
       meObjectId,
     ];
 
@@ -1315,7 +1385,25 @@ router.get('/feed/following', auth, async (req, res) => {
           .select("followingId")
           .lean();
 
-        const followingIds = follows.map(f => new mongoose.Types.ObjectId(f.followingId));
+        const rawFollowingIds = follows.map(f => new mongoose.Types.ObjectId(f.followingId));
+        const isAdminViewer = String(req.user?.accountType || "").toLowerCase() === "admin";
+
+        let followingIds = rawFollowingIds;
+
+        if (!isAdminViewer) {
+          const visibleUsers = await User.find({
+            _id: { $in: rawFollowingIds },
+            accountType: { $ne: "admin" },
+            isBanned: { $ne: true },
+            isDeleted: { $ne: true },
+            deletedAt: null,
+          })
+            .select("_id")
+            .lean();
+
+          const visibleSet = new Set(visibleUsers.map((u) => String(u._id)));
+          followingIds = rawFollowingIds.filter((id) => visibleSet.has(String(id)));
+        }
 
         if (followingIds.length === 0) {
             return res.json({
@@ -1428,16 +1516,24 @@ router.get("/feed/following-mixed", auth, async (req, res) => {
       console.warn("following-mixed: invalid followingIds:", badIds);
     }
 
-    // ✅ ADMIN INVISIBLE (remove admin ids from following list)
-    const nonAdminUsers = await User.find({
-      _id: { $in: safeFollowingIds.map((id) => new mongoose.Types.ObjectId(String(id))) },
-      accountType: { $ne: "admin" },
-    })
-      .select("_id")
-      .lean();
+    const isAdminViewer = String(req.user?.accountType || "").toLowerCase() === "admin";
 
-    const nonAdminSet = new Set(nonAdminUsers.map((u) => String(u._id)));
-    const safeFollowingIdsNoAdmin = safeFollowingIds.filter((id) => nonAdminSet.has(String(id)));
+    let safeFollowingIdsNoAdmin = safeFollowingIds;
+
+    if (!isAdminViewer) {
+      const visibleUsers = await User.find({
+        _id: { $in: safeFollowingIds.map((id) => new mongoose.Types.ObjectId(String(id))) },
+        accountType: { $ne: "admin" },
+        isBanned: { $ne: true },
+        isDeleted: { $ne: true },
+        deletedAt: null,
+      })
+        .select("_id")
+        .lean();
+
+      const visibleSet = new Set(visibleUsers.map((u) => String(u._id)));
+      safeFollowingIdsNoAdmin = safeFollowingIds.filter((id) => visibleSet.has(String(id)));
+    }
 
     const safeFollowingObjIds = safeFollowingIdsNoAdmin
       .map((id) => String(id))
@@ -1767,7 +1863,11 @@ router.post("/:id/comment", auth, async (req, res) => {
     }
 
     // ✅ Guard access (block / followers-only / private / admin invisible)
-    const g = await guardPostAccessForComments({ meId: req.user._id, post });
+    const g = await guardPostAccessForComments({
+      meId: req.user._id,
+      post,
+      viewerAccountType: req.user?.accountType,
+    });
     if (!g.ok) {
       return res.status(g.status).json({ status: "error", code: g.code, message: g.message });
     }
@@ -1996,7 +2096,11 @@ router.get("/:id", auth, async (req, res) => {
     }
 
     // access guard (reuse the same rules used for comments)
-    const g = await guardPostAccessForComments({ meId: req.user._id, post });
+    const g = await guardPostAccessForComments({
+      meId: req.user._id,
+      post,
+      viewerAccountType: req.user?.accountType,
+    });
     if (!g.ok) {
       return res.status(g.status).json({ status: "error", code: g.code, message: g.message });
     }
@@ -2039,7 +2143,11 @@ router.get("/:id/comments", auth, async (req, res) => {
       });
     }
 
-    const g = await guardPostAccessForComments({ meId: req.user._id, post });
+    const g = await guardPostAccessForComments({
+      meId: req.user._id,
+      post,
+      viewerAccountType: req.user?.accountType,
+    });
     if (!g.ok) {
       return res.status(g.status).json({ status: "error", code: g.code, message: g.message });
     }
@@ -2204,7 +2312,11 @@ router.delete("/:postId/comments/:commentId", auth, async (req, res) => {
       });
     }
 
-    const g = await guardPostAccessForComments({ meId: userId, post });
+    const g = await guardPostAccessForComments({
+      meId: req.user._id,
+      post,
+      viewerAccountType: req.user?.accountType,
+    });
     if (!g.ok) {
       return res.status(g.status).json({ status: "error", code: g.code, message: g.message });
     }

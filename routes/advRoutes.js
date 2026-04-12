@@ -48,6 +48,27 @@ function activeWindowQuery(now = new Date()) {
   };
 }
 
+function isUserDeletedLike(user) {
+  return user?.isDeleted === true || !!user?.deletedAt;
+}
+
+async function getNonPublicCreatorIds({ isAdminViewer = false } = {}) {
+  if (isAdminViewer) return [];
+
+  const docs = await User.find({
+    $or: [
+      { accountType: "admin" },
+      { isBanned: true },
+      { isDeleted: true },
+      { deletedAt: { $ne: null } },
+    ],
+  })
+    .select("_id")
+    .lean();
+
+  return docs.map((u) => String(u._id));
+}
+
 async function ensureCreator(req, res, next) {
   try {
     if (!req.user) {
@@ -503,6 +524,26 @@ router.get('/profile/active/:userId', auth, async (req, res) => {
   try {
     const { userId } = req.params;
     const now = new Date();
+    const isAdminViewer = String(req.user?.accountType || "").toLowerCase() === "admin";
+
+    const targetCreator = await User.findById(userId)
+      .select("_id accountType isBanned isDeleted deletedAt")
+      .lean();
+
+    if (!targetCreator) {
+      return res.status(200).json({ status: 'success', data: null });
+    }
+
+    if (
+      !isAdminViewer &&
+      (
+        targetCreator?.accountType === "admin" ||
+        targetCreator?.isBanned === true ||
+        isUserDeletedLike(targetCreator)
+      )
+    ) {
+      return res.status(200).json({ status: 'success', data: null });
+    }
 
     const meId = String(req.user?._id || req.user?.id || "");
     if (meId && userId) {
@@ -567,6 +608,8 @@ router.get('/serve', auth, async (req, res) => {
     const isVip = dbUser.isVip === true;
 
     const blockedIds = await getBlockedUserIds(String(userId));
+    const isAdminViewer = String(dbUser?.accountType || "").toLowerCase() === "admin";
+    const hiddenCreatorIds = await getNonPublicCreatorIds({ isAdminViewer });
 
     // 🔹 content context (standard | neutral | live_events)
     const ctx = dbUser?.appSettings?.contentContext || DEFAULT_CONTEXT;
@@ -579,7 +622,7 @@ router.get('/serve', auth, async (req, res) => {
       isActive: true,
       reviewStatus: "approved",
       placement,
-      creatorId: { $nin: blockedIds },
+      creatorId: { $nin: [...blockedIds, ...hiddenCreatorIds] },
       ...activeWindowQuery(now),
     };
 
@@ -785,6 +828,8 @@ router.get('/serve-four', auth, async (req, res) => {
     }
 
     const blockedIds = await getBlockedUserIds(String(userId));
+    const isAdminViewer = String(dbUser?.accountType || "").toLowerCase() === "admin";
+    const hiddenCreatorIds = await getNonPublicCreatorIds({ isAdminViewer });
 
     const ctx = dbUser?.appSettings?.contentContext || DEFAULT_CONTEXT;
 
@@ -796,7 +841,7 @@ router.get('/serve-four', auth, async (req, res) => {
       isActive: true,
       reviewStatus: "approved",
       placement,
-      creatorId: { $nin: blockedIds },
+      creatorId: { $nin: [...blockedIds, ...hiddenCreatorIds] },
       ...activeWindowQuery(now),
     };
 

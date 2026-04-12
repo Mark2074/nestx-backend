@@ -51,6 +51,27 @@ function addDays(date, days) {
   return d;
 }
 
+function isUserDeletedLike(user) {
+  return user?.isDeleted === true || !!user?.deletedAt;
+}
+
+async function getNonPublicCreatorIds({ isAdminViewer = false } = {}) {
+  if (isAdminViewer) return [];
+
+  const docs = await User.find({
+    $or: [
+      { accountType: "admin" },
+      { isBanned: true },
+      { isDeleted: true },
+      { deletedAt: { $ne: null } },
+    ],
+  })
+    .select("_id")
+    .lean();
+
+  return docs.map((u) => String(u._id));
+}
+
 async function ensureVipOnly(req, res, next) {
   try {
     if (!req.user) {
@@ -346,11 +367,13 @@ router.get("/serve", auth, async (req, res) => {
 
     const meId = String(req.user?._id || req.user?.id || "");
     const blockedIds = meId ? await getBlockedUserIds(meId) : [];
+    const isAdminViewer = String(req.user?.accountType || "").toLowerCase() === "admin";
+    const hiddenCreatorIds = await getNonPublicCreatorIds({ isAdminViewer });
 
     const raw = await ShowcaseItem.findOne({
       isActive: true,
       reviewStatus: "approved",
-      creatorId: { $nin: blockedIds },
+      creatorId: { $nin: [...blockedIds, ...hiddenCreatorIds] },
       ...activeWindowQuery(now),
     })
       .populate({ path: "creatorId", select: "displayName avatar accountType role" })
@@ -409,11 +432,13 @@ router.get("/all", auth, async (req, res) => {
 
     const meId = String(req.user?._id || req.user?.id || "");
     const blockedIds = meId ? await getBlockedUserIds(meId) : [];
+    const isAdminViewer = String(req.user?.accountType || "").toLowerCase() === "admin";
+    const hiddenCreatorIds = await getNonPublicCreatorIds({ isAdminViewer });
 
     const q = {
       isActive: true,
       reviewStatus: "approved",
-      creatorId: { $nin: blockedIds },
+      creatorId: { $nin: [...blockedIds, ...hiddenCreatorIds] },
       ...activeWindowQuery(now),
     };
 
@@ -475,15 +500,37 @@ router.post("/:id/click", auth, async (req, res) => {
   try {
     const itemId = req.params.id;
 
-    const item = await ShowcaseItem.findByIdAndUpdate(
-      itemId,
-      { $inc: { clicks: 1 } },
-      { new: true }
-    ).select("creatorId clicks");
+    const item = await ShowcaseItem.findById(itemId).select("creatorId clicks");
 
     if (!item) {
       return res.status(404).json({ status: "error", message: "Showcase item not found" });
     }
+
+    const isAdminViewer = String(req.user?.accountType || "").toLowerCase() === "admin";
+
+    const creator = await User.findById(item.creatorId)
+      .select("_id accountType isBanned isDeleted deletedAt")
+      .lean();
+
+    if (!creator) {
+      return res.status(404).json({ status: "error", message: "Showcase item not found" });
+    }
+
+    if (
+      !isAdminViewer &&
+      (
+        creator?.accountType === "admin" ||
+        creator?.isBanned === true ||
+        isUserDeletedLike(creator)
+      )
+    ) {
+      return res.status(404).json({ status: "error", message: "Showcase item not found" });
+    }
+
+    await ShowcaseItem.updateOne(
+      { _id: itemId },
+      { $inc: { clicks: 1 } }
+    );
 
     // 👉 redirect interno al profilo owner (decidi tu il path esatto del frontend)
     const creatorId = String(item.creatorId || "");
@@ -492,7 +539,7 @@ router.post("/:id/click", auth, async (req, res) => {
       status: "success",
       data: {
         id: item._id,
-        clicks: item.clicks,
+        clicks: Number(item.clicks || 0) + 1,
         creatorId,
       },
     });
