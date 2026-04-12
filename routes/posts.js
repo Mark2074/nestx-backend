@@ -906,7 +906,6 @@ router.get("/me", auth, async (req, res) => {
     const baseQuery = {
       authorId: req.user._id,
       "moderation.isDeleted": { $ne: true },
-      isHidden: { $ne: true },
     };
 
     const [posts, total] = await Promise.all([
