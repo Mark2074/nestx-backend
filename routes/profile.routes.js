@@ -443,7 +443,13 @@ router.get("/public/:id", auth, async (req, res) => {
     let followStatus = "none";
     let isLocked = false;
 
-    if (String(meId) !== String(targetUserId) && user.isPrivate === true) {
+    const isAdminViewer = req.user?.accountType === "admin";
+
+    if (
+      !isAdminViewer &&
+      String(meId) !== String(targetUserId) &&
+      user.isPrivate === true
+    ) {
       const rel = await Follow.findOne({
         followerId: meId,
         followingId: targetUserId,
@@ -453,6 +459,11 @@ router.get("/public/:id", auth, async (req, res) => {
       if (rel?.status === "accepted") followStatus = "accepted";
 
       isLocked = followStatus !== "accepted";
+    }
+
+    if (isAdminViewer) {
+      followStatus = "accepted";
+      isLocked = false;
     }
 
     // ✅ Contatori follower/following SOLO accepted (no pending)

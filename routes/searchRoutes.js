@@ -40,7 +40,8 @@ function sha256(s) {
 }
 
 // Privati non seguiti (accepted) + bloccati (both directions)
-async function buildExcludedUserIds(meId) {
+async function buildExcludedUserIds(meId, options = {}) {
+  const isAdmin = options.isAdmin === true;
   // blocchi (entrambi i lati)
   const blockedIds = await getBlockedUserIds(meId); // deve includere io->loro + loro->me
   const blockedSet = new Set(blockedIds.map((id) => String(id)));
@@ -60,14 +61,18 @@ async function buildExcludedUserIds(meId) {
     (id) => new mongoose.Types.ObjectId(id)
   );
 
-  const privateNotAllowedDocs = await User.find({
-    isPrivate: true,
-    _id: { $nin: allowedPrivateObjIds },
-  })
-    .select("_id")
-    .lean();
+  let privateNotAllowed = [];
 
-  const privateNotAllowed = privateNotAllowedDocs.map((u) => String(u._id));
+  if (!isAdmin) {
+    const privateNotAllowedDocs = await User.find({
+      isPrivate: true,
+      _id: { $nin: allowedPrivateObjIds },
+    })
+      .select("_id")
+      .lean();
+
+    privateNotAllowed = privateNotAllowedDocs.map((u) => String(u._id));
+  }
 
   const excluded = new Set([...blockedSet, ...privateNotAllowed]);
   excluded.delete(String(meId)); // io posso sempre vedermi
@@ -109,7 +114,9 @@ async function checkProhibitedSearch(q) {
 router.get("/search", auth, async (req, res) => {
   try {
     const me = req.user;
+    const isAdmin = req.user?.accountType === "admin";
     const isVip = req.user?.isVip === true;
+    const canUseVipFilters = isVip || isAdmin;
 
     const q = String(req.query.q ?? "").trim();
 
@@ -242,7 +249,7 @@ router.get("/search", auth, async (req, res) => {
     const blockedIdsRaw = await getBlockedUserIds(me._id);
     const blockedIds = Array.isArray(blockedIdsRaw) ? blockedIdsRaw.map((id) => String(id)) : [];
 
-    const excludedUserIds = await buildExcludedUserIds(me._id);
+    const excludedUserIds = await buildExcludedUserIds(me._id, { isAdmin });
     const acceptedFollowingObjIds = await getAcceptedFollowingObjIds(me._id);
 
     const adminUsers = await User.find({ accountType: "admin" }).select("_id").lean();
@@ -279,7 +286,7 @@ router.get("/search", auth, async (req, res) => {
       }
 
       // VIP only: profileType/country/language
-      if (isVip) {
+      if (canUseVipFilters) {
         if (profileType) userQuery.profileType = profileType;
 
         if (country) {
@@ -334,8 +341,7 @@ router.get("/search", auth, async (req, res) => {
       ];
 
       // VIP only: filtri su AUTORE (non sul post)
-      if (isVip && (profileType || country || language)) {
-        const authorQ = { _id: { $nin: finalExcludedObjIds } };
+      if (canUseVipFilters && (profileType || country || language)) {        const authorQ = { _id: { $nin: finalExcludedObjIds } };
         if (profileType) authorQ.profileType = profileType;
         if (language) authorQ.language = language;
 
@@ -403,7 +409,7 @@ router.get("/search", auth, async (req, res) => {
       }
 
       // EVENTS: language VIP only
-      if (isVip && language) {
+      if (canUseVipFilters && language) {
         eventQuery.language = language;
       }
 
