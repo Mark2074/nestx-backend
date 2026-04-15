@@ -50,12 +50,36 @@ async function cfFetchJson(url, options = {}) {
   return data;
 }
 
+function buildParticipantName(user) {
+  const displayName = String(user?.displayName || "").trim();
+  if (displayName) return displayName.slice(0, 80);
+  return `User ${String(user?._id || "").slice(-6)}`;
+}
+
+function buildCustomParticipantId(user, role) {
+  const userId = String(user?._id || "").trim();
+  if (role === "host") return `host_${userId}`;
+  return `viewer_${userId}_${Date.now()}`;
+}
+
+function getPresetNameForRole(role) {
+  const cfg = getRealtimeKitConfig();
+  return role === "host" ? cfg.publisherPreset : cfg.viewerPreset;
+}
+
 function getRoomRuntimeFromEvent(event, scope) {
   if (scope === "private") {
     return {
       roomId: event?.privateSession?.roomId || null,
       meetingId: event?.privateSession?.meetingId || null,
       provider: event?.privateSession?.provider || "cloudflare",
+      hostParticipantId: event?.privateSession?.hostParticipantId || null,
+      hostParticipantName: event?.privateSession?.hostParticipantName || null,
+      hostPresetName: event?.privateSession?.hostPresetName || null,
+      hostRealtimeState: event?.privateSession?.hostRealtimeState || "idle",
+      hostJoinedAt: event?.privateSession?.hostJoinedAt || null,
+      hostBroadcastStartedAt: event?.privateSession?.hostBroadcastStartedAt || null,
+      hostLastTokenIssuedAt: event?.privateSession?.hostLastTokenIssuedAt || null,
     };
   }
 
@@ -63,6 +87,13 @@ function getRoomRuntimeFromEvent(event, scope) {
     roomId: event?.live?.roomId || String(event?._id || ""),
     meetingId: event?.live?.meetingId || null,
     provider: event?.live?.provider || "cloudflare",
+    hostParticipantId: event?.live?.hostParticipantId || null,
+    hostParticipantName: event?.live?.hostParticipantName || null,
+    hostPresetName: event?.live?.hostPresetName || null,
+    hostRealtimeState: event?.live?.hostRealtimeState || "idle",
+    hostJoinedAt: event?.live?.hostJoinedAt || null,
+    hostBroadcastStartedAt: event?.live?.hostBroadcastStartedAt || null,
+    hostLastTokenIssuedAt: event?.live?.hostLastTokenIssuedAt || null,
   };
 }
 
@@ -91,6 +122,39 @@ async function saveMeetingIdOnEvent({ eventId, scope, meetingId }) {
   );
 }
 
+async function saveHostRuntimeOnEvent({
+  eventId,
+  scope,
+  hostParticipantId,
+  hostParticipantName,
+  hostPresetName,
+  hostRealtimeState,
+  hostJoinedAt,
+  hostBroadcastStartedAt,
+  hostLastTokenIssuedAt,
+}) {
+  const base =
+    scope === "private"
+      ? "privateSession"
+      : "live";
+
+  await Event.updateOne(
+    { _id: eventId },
+    {
+      $set: {
+        [`${base}.provider`]: "cloudflare",
+        [`${base}.hostParticipantId`]: hostParticipantId ?? null,
+        [`${base}.hostParticipantName`]: hostParticipantName ?? null,
+        [`${base}.hostPresetName`]: hostPresetName ?? null,
+        [`${base}.hostRealtimeState`]: hostRealtimeState ?? "idle",
+        [`${base}.hostJoinedAt`]: hostJoinedAt ?? null,
+        [`${base}.hostBroadcastStartedAt`]: hostBroadcastStartedAt ?? null,
+        [`${base}.hostLastTokenIssuedAt`]: hostLastTokenIssuedAt ?? null,
+      },
+    }
+  );
+}
+
 async function createMeetingForRoom({ title }) {
   const cfg = getRealtimeKitConfig();
   const apiBase = buildApiBase(cfg);
@@ -101,9 +165,7 @@ async function createMeetingForRoom({ title }) {
       "Content-Type": "application/json",
       "Authorization": `Bearer ${cfg.apiToken}`,
     },
-    body: JSON.stringify({
-      title,
-    }),
+    body: JSON.stringify({ title }),
   });
 
   const meetingId =
@@ -137,12 +199,12 @@ async function ensureMeetingForRoom({ event, scope }) {
     };
   }
 
-  const suffix = scope === "private"
-    ? (event?.privateSession?.roomId || `${event._id}_private`)
-    : (event?.live?.roomId || String(event._id));
+  const suffix =
+    scope === "private"
+      ? (event?.privateSession?.roomId || `${event._id}_private`)
+      : (event?.live?.roomId || String(event._id));
 
   const title = `NestX ${scope} ${suffix}`;
-
   const createdMeeting = await createMeetingForRoom({ title });
 
   await saveMeetingIdOnEvent({
@@ -159,30 +221,14 @@ async function ensureMeetingForRoom({ event, scope }) {
   };
 }
 
-function getPresetNameForRole(role) {
-  const cfg = getRealtimeKitConfig();
-
-  if (role === "host") {
-    return cfg.publisherPreset;
-  }
-
-  return cfg.viewerPreset;
-}
-
-function buildParticipantName(user) {
-  const displayName = String(user?.displayName || "").trim();
-  if (displayName) return displayName.slice(0, 80);
-  return `User ${String(user?._id || "").slice(-6)}`;
-}
-
-function buildCustomParticipantId(user) {
-  return `user_${String(user?._id || "")}`;
-}
-
-async function createParticipantToken({ meetingId, user, role }) {
+async function createParticipantToken({ meetingId, user, role, customParticipantIdOverride = null }) {
   const cfg = getRealtimeKitConfig();
   const apiBase = buildApiBase(cfg);
   const presetName = getPresetNameForRole(role);
+  const participantName = buildParticipantName(user);
+  const customParticipantId =
+    String(customParticipantIdOverride || "").trim() ||
+    buildCustomParticipantId(user, role);
 
   const response = await cfFetchJson(
     `${apiBase}/meetings/${meetingId}/participants`,
@@ -193,9 +239,9 @@ async function createParticipantToken({ meetingId, user, role }) {
         "Authorization": `Bearer ${cfg.apiToken}`,
       },
       body: JSON.stringify({
-        name: buildParticipantName(user),
+        name: participantName,
         preset_name: presetName,
-        custom_participant_id: buildCustomParticipantId(user),
+        custom_participant_id: customParticipantId,
       }),
     }
   );
@@ -214,13 +260,89 @@ async function createParticipantToken({ meetingId, user, role }) {
     participantId,
     token,
     presetName,
+    participantName,
+    customParticipantId,
     raw: participant,
   };
+}
+
+async function ensureHostParticipantForRoom({ event, scope, user, meetingId }) {
+  const current = getRoomRuntimeFromEvent(event, scope);
+
+  const created = await createParticipantToken({
+    meetingId,
+    user,
+    role: "host",
+    customParticipantIdOverride: `host_${String(event._id)}`,
+  });
+
+  const hostParticipantId =
+    String(current?.hostParticipantId || "").trim() ||
+    created.participantId;
+
+  const hostRealtimeState = String(current?.hostRealtimeState || "idle").trim().toLowerCase();
+
+  await saveHostRuntimeOnEvent({
+    eventId: event._id,
+    scope,
+    hostParticipantId,
+    hostParticipantName: current?.hostParticipantName || created.participantName,
+    hostPresetName: current?.hostPresetName || created.presetName,
+    hostRealtimeState: hostRealtimeState === "idle" ? "setup" : hostRealtimeState,
+    hostJoinedAt: current?.hostJoinedAt || new Date(),
+    hostBroadcastStartedAt: current?.hostBroadcastStartedAt || null,
+    hostLastTokenIssuedAt: new Date(),
+  });
+
+  return {
+    participantId: hostParticipantId,
+    reused: !!current?.hostParticipantId,
+    presetName: current?.hostPresetName || created.presetName,
+    participantName: current?.hostParticipantName || created.participantName,
+    token: created.token,
+  };
+}
+
+async function issueViewerParticipantToken({ meetingId, user }) {
+  return createParticipantToken({
+    meetingId,
+    user,
+    role: "viewer",
+  });
+}
+
+async function markHostRealtimeState({
+  eventId,
+  scope,
+  state,
+  broadcastStarted = false,
+}) {
+  const currentEvent = await Event.findById(eventId).lean().exec();
+  if (!currentEvent) return;
+
+  const current = getRoomRuntimeFromEvent(currentEvent, scope);
+
+  await saveHostRuntimeOnEvent({
+    eventId,
+    scope,
+    hostParticipantId: current?.hostParticipantId || null,
+    hostParticipantName: current?.hostParticipantName || null,
+    hostPresetName: current?.hostPresetName || null,
+    hostRealtimeState: state,
+    hostJoinedAt: current?.hostJoinedAt || null,
+    hostBroadcastStartedAt:
+      broadcastStarted
+        ? (current?.hostBroadcastStartedAt || new Date())
+        : (current?.hostBroadcastStartedAt || null),
+    hostLastTokenIssuedAt: current?.hostLastTokenIssuedAt || null,
+  });
 }
 
 module.exports = {
   getRealtimeKitConfig,
   getRoomRuntimeFromEvent,
   ensureMeetingForRoom,
-  createParticipantToken,
+  ensureHostParticipantForRoom,
+  issueViewerParticipantToken,
+  markHostRealtimeState,
 };

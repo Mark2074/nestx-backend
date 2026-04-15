@@ -224,6 +224,17 @@ const EventSchema = new mongoose.Schema(
       roomId: { type: String, default: null },
       meetingId: { type: String, default: null },
       provider: { type: String, default: "cloudflare" },
+      hostParticipantId: { type: String, default: null },
+      hostParticipantName: { type: String, default: null },
+      hostPresetName: { type: String, default: null },
+      hostRealtimeState: {
+        type: String,
+        enum: ["idle", "setup", "joined", "broadcasting", "ended"],
+        default: "idle",
+      },
+      hostJoinedAt: { type: Date, default: null },
+      hostBroadcastStartedAt: { type: Date, default: null },
+      hostLastTokenIssuedAt: { type: Date, default: null },
       isEnabled: { type: Boolean, default: false },
       status: {
         type: String,
@@ -283,6 +294,35 @@ const EventSchema = new mongoose.Schema(
       provider: {
         type: String,
         default: "cloudflare",
+      },
+      hostParticipantId: {
+        type: String,
+        default: null,
+      },
+      hostParticipantName: {
+        type: String,
+        default: null,
+      },
+      hostPresetName: {
+        type: String,
+        default: null,
+      },
+      hostRealtimeState: {
+        type: String,
+        enum: ["idle", "setup", "joined", "broadcasting", "ended"],
+        default: "idle",
+      },
+      hostJoinedAt: {
+        type: Date,
+        default: null,
+      },
+      hostBroadcastStartedAt: {
+        type: Date,
+        default: null,
+      },
+      hostLastTokenIssuedAt: {
+        type: Date,
+        default: null,
       },
       startedAt: {
         type: Date,

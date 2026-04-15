@@ -20,7 +20,9 @@ const AdminAuditLog = require("../models/AdminAuditLog");
 const User = require("../models/user");
 const {
   ensureMeetingForRoom,
-  createParticipantToken,
+  ensureHostParticipantForRoom,
+  issueViewerParticipantToken,
+  markHostRealtimeState,
 } = require("../services/realtimeKitService");
 
 // helper: normalizza scope (public/private)
@@ -361,11 +363,21 @@ router.post("/token", auth, featureGuard("live"), async (req, res) => {
       scope: effectiveScope,
     });
 
-    const participant = await createParticipantToken({
-      meetingId: ensuredMeeting.meetingId,
-      user,
-      role,
-    });
+    let participant;
+
+    if (isHost) {
+      participant = await ensureHostParticipantForRoom({
+        event,
+        scope: effectiveScope,
+        user,
+        meetingId: ensuredMeeting.meetingId,
+      });
+    } else {
+      participant = await issueViewerParticipantToken({
+        meetingId: ensuredMeeting.meetingId,
+        user,
+      });
+    }
 
     return res.status(200).json({
       status: "success",
@@ -411,6 +423,78 @@ router.post("/token", auth, featureGuard("live"), async (req, res) => {
     return res.status(500).json({
       status: "error",
       message: "Internal error while generating live token",
+    });
+  }
+});
+
+/**
+ * @route POST /api/live/:eventId/host-realtime-state
+ * @desc Sync host realtime state (setup/joined/broadcasting/ended)
+ * @access Private
+ */
+router.post("/:eventId/host-realtime-state", auth, featureGuard("live"), async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ status: "error", message: "Unauthenticated user" });
+    }
+
+    const eventId = String(req.params.eventId || "").trim();
+    if (!eventId || eventId.length < 10) {
+      return res.status(400).json({ status: "error", message: "Invalid event ID" });
+    }
+
+    const scope = getScopeFromReq(req);
+    const nextState = String(req.body?.state || "").trim().toLowerCase();
+
+    if (!["idle", "setup", "joined", "broadcasting", "ended"].includes(nextState)) {
+      return res.status(400).json({
+        status: "error",
+        code: "INVALID_HOST_REALTIME_STATE",
+        message: "Invalid host realtime state",
+      });
+    }
+
+    const event = await Event.findById(eventId)
+      .select("_id creatorId")
+      .lean()
+      .exec();
+
+    if (!event) {
+      return res.status(404).json({ status: "error", message: "Event not found" });
+    }
+
+    const isHost = String(user._id) === String(event.creatorId);
+    const isAdmin = String(user.accountType || "").toLowerCase() === "admin";
+
+    if (!isHost && !isAdmin) {
+      return res.status(403).json({
+        status: "error",
+        code: "ACCESS_DENIED",
+        message: "Access denied",
+      });
+    }
+
+    await markHostRealtimeState({
+      eventId,
+      scope,
+      state: nextState,
+      broadcastStarted: nextState === "broadcasting",
+    });
+
+    return res.status(200).json({
+      status: "success",
+      data: {
+        eventId,
+        scope,
+        state: nextState,
+      },
+    });
+  } catch (err) {
+    console.error("Error during host-realtime-state:", err);
+    return res.status(500).json({
+      status: "error",
+      message: "Internal error while syncing host realtime state",
     });
   }
 });
