@@ -300,7 +300,16 @@ router.post("/token", auth, featureGuard("live"), async (req, res) => {
       });
     }
 
-    if (String(event.status || "") !== "live") {
+    const isHost = String(user._id) === String(event.creatorId);
+    const isAdmin = String(user.accountType || "").toLowerCase() === "admin";
+    const eventStatus = String(event.status || "").trim().toLowerCase();
+    const isEventLive = eventStatus === "live";
+
+    // PRE-LIVE HOST ACCESS:
+    // - host can get realtime token even when event is not live yet
+    // - admin does NOT get this bypass
+    // - viewers still require event live
+    if (!isEventLive && !isHost) {
       return res.status(409).json({
         status: "error",
         code: "EVENT_NOT_LIVE",
@@ -308,12 +317,25 @@ router.post("/token", auth, featureGuard("live"), async (req, res) => {
       });
     }
 
-    const access = await checkEventAccess({
-      event,
-      userId: user._id,
-      requestedScope,
-      accountType: user.accountType,
-    });
+    let access;
+
+    if (isHost && !isEventLive) {
+      access = {
+        canEnter: true,
+        authorizedScope: requestedScope === "private" ? "private" : "public",
+        authorizedRoomId:
+          requestedScope === "private"
+            ? (event?.privateSession?.roomId || null)
+            : (event?.live?.roomId || String(event?._id || "")),
+      };
+    } else {
+      access = await checkEventAccess({
+        event,
+        userId: user._id,
+        requestedScope,
+        accountType: user.accountType,
+      });
+    }
 
     if (!access.canEnter) {
       return res.status(403).json({
@@ -332,8 +354,6 @@ router.post("/token", auth, featureGuard("live"), async (req, res) => {
       });
     }
 
-    const isHost = String(user._id) === String(event.creatorId);
-    const isAdmin = String(user.accountType || "").toLowerCase() === "admin";
     const role = isHost ? "host" : "viewer";
 
     const ensuredMeeting = await ensureMeetingForRoom({
