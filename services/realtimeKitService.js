@@ -266,8 +266,72 @@ async function createParticipantToken({ meetingId, user, role, customParticipant
   };
 }
 
+async function refreshParticipantToken({ meetingId, participantId }) {
+  const cfg = getRealtimeKitConfig();
+  const apiBase = buildApiBase(cfg);
+
+  const response = await cfFetchJson(
+    `${apiBase}/meetings/${meetingId}/participants/${participantId}/token`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${cfg.apiToken}`,
+      },
+    }
+  );
+
+  const data = response?.data || response?.result || null;
+  const token = data?.token || data?.authToken || null;
+
+  if (!token) {
+    const err = new Error("Cloudflare refreshed participant token missing in response");
+    err.code = "CF_PARTICIPANT_REFRESH_TOKEN_MISSING";
+    throw err;
+  }
+
+  return {
+    token,
+    raw: data,
+  };
+}
+
 async function ensureHostParticipantForRoom({ event, scope, user, meetingId }) {
   const current = getRoomRuntimeFromEvent(event, scope);
+
+  const existingParticipantId = String(current?.hostParticipantId || "").trim();
+  const existingParticipantName =
+    String(current?.hostParticipantName || "").trim() || buildParticipantName(user);
+  const existingPresetName =
+    String(current?.hostPresetName || "").trim() || getPresetNameForRole("host");
+  const hostRealtimeState = String(current?.hostRealtimeState || "idle").trim().toLowerCase();
+
+  if (existingParticipantId) {
+    const refreshed = await refreshParticipantToken({
+      meetingId,
+      participantId: existingParticipantId,
+    });
+
+    await saveHostRuntimeOnEvent({
+      eventId: event._id,
+      scope,
+      hostParticipantId: existingParticipantId,
+      hostParticipantName: existingParticipantName,
+      hostPresetName: existingPresetName,
+      hostRealtimeState: hostRealtimeState === "idle" ? "setup" : hostRealtimeState,
+      hostJoinedAt: current?.hostJoinedAt || new Date(),
+      hostBroadcastStartedAt: current?.hostBroadcastStartedAt || null,
+      hostLastTokenIssuedAt: new Date(),
+    });
+
+    return {
+      participantId: existingParticipantId,
+      reused: true,
+      presetName: existingPresetName,
+      participantName: existingParticipantName,
+      token: refreshed.token,
+    };
+  }
 
   const created = await createParticipantToken({
     meetingId,
@@ -276,29 +340,23 @@ async function ensureHostParticipantForRoom({ event, scope, user, meetingId }) {
     customParticipantIdOverride: `host_${String(event._id)}`,
   });
 
-  const hostParticipantId =
-    String(current?.hostParticipantId || "").trim() ||
-    created.participantId;
-
-  const hostRealtimeState = String(current?.hostRealtimeState || "idle").trim().toLowerCase();
-
   await saveHostRuntimeOnEvent({
     eventId: event._id,
     scope,
-    hostParticipantId,
-    hostParticipantName: current?.hostParticipantName || created.participantName,
-    hostPresetName: current?.hostPresetName || created.presetName,
-    hostRealtimeState: hostRealtimeState === "idle" ? "setup" : hostRealtimeState,
-    hostJoinedAt: current?.hostJoinedAt || new Date(),
-    hostBroadcastStartedAt: current?.hostBroadcastStartedAt || null,
+    hostParticipantId: created.participantId,
+    hostParticipantName: created.participantName,
+    hostPresetName: created.presetName,
+    hostRealtimeState: "setup",
+    hostJoinedAt: new Date(),
+    hostBroadcastStartedAt: null,
     hostLastTokenIssuedAt: new Date(),
   });
 
   return {
-    participantId: hostParticipantId,
-    reused: !!current?.hostParticipantId,
-    presetName: current?.hostPresetName || created.presetName,
-    participantName: current?.hostParticipantName || created.participantName,
+    participantId: created.participantId,
+    reused: false,
+    presetName: created.presetName,
+    participantName: created.participantName,
     token: created.token,
   };
 }
@@ -345,4 +403,5 @@ module.exports = {
   ensureHostParticipantForRoom,
   issueViewerParticipantToken,
   markHostRealtimeState,
+  refreshParticipantToken,
 };
