@@ -4561,12 +4561,11 @@ router.post("/:id/join", auth, featureGuard("live"), async (req, res) => {
     const mutedUserIds = Array.isArray(event.mutedUserIds) ? event.mutedUserIds : [];
     const isMuted = mutedUserIds.some((id) => String(id) === String(user._id));
 
-    // chat enabled flag (source: live.chatEnabledForViewers -> fallback event.chatEnabledForViewers)
-    const liveMeta = event.live || {};
+    // chat enabled flag: business truth must come from event root, not live runtime
     const chatEnabledForViewers =
-      typeof liveMeta.chatEnabledForViewers === "boolean"
-        ? liveMeta.chatEnabledForViewers
-        : (typeof event.chatEnabledForViewers === "boolean" ? event.chatEnabledForViewers : false);
+      typeof event.chatEnabledForViewers === "boolean"
+        ? event.chatEnabledForViewers
+        : true;
 
     // carico dati aggiornati user dal DB per evitare valori stale su req.user
     const dbUser = await User.findById(user._id)
