@@ -4571,10 +4571,11 @@ router.post("/:id/join", auth, featureGuard("live"), async (req, res) => {
     // - Host sempre
     // - Se evento a pagamento (ticketPriceTokens>0) => chi ha accesso può chattare (se chatEnabledForViewers e non muted)
     // - Se evento free => VIP sempre, Base solo se tokenBalance>0 (se chatEnabledForViewers e non muted)
+    const isAdmin = String(getAccountTypeFromUser(user) || "").toLowerCase() === "admin";
     const isPaidEvent = Number(event.ticketPriceTokens || 0) > 0 || effectiveScope === "private";
 
     const canChat =
-      role === "host"
+      role === "host" || isAdmin
         ? true
         : (chatEnabledForViewers && !isMuted)
           ? (isPaidEvent
