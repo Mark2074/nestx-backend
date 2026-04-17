@@ -618,6 +618,23 @@ router.post("/:eventId/join-room", auth, featureGuard("live"), async (req, res) 
     }
 
     const event = await Event.findById(eventId).exec();
+    console.log("JOIN_ROOM_DEBUG", {
+      eventId: String(event?._id || ""),
+      status: event?.status,
+      contentScope: event?.contentScope,
+      accessScope: event?.accessScope,
+
+      // 🔴 QUESTO CI INTERESSA
+      event_chatEnabledForViewers: event?.chatEnabledForViewers,
+      live_chatEnabledForViewers: event?.live?.chatEnabledForViewers,
+
+      // DEBUG EXTRA
+      interactionMode: event?.interactionMode,
+      live: event?.live,
+
+      // USER
+      userId: String(req.user?._id || ""),
+    });
     if (!event) return res.status(404).json({ status: "error", message: "Event not found" });
 
     const isHost = String(user._id) === String(event.creatorId);
