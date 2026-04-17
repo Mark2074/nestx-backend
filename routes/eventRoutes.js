@@ -702,8 +702,9 @@ router.post("/", auth, featureGuard("live"), async (req, res) => {
       plannedDurationMinutes: safeDuration,
       plannedInteractionMode: interactionMode,
 
-      // chat di default: solo se interactive
-      chatEnabledForViewers: interactionMode === "interactive",
+      // NestX live model: viewers can chat also in broadcast mode.
+      // broadcast only blocks viewer A/V, not text chat.
+      chatEnabledForViewers: true,
     });
 
     const saved = await event.save();
