@@ -133,6 +133,56 @@ function canSendChat(eventId, userId) {
   return { ok: true, retryAfterMs: 0 };
 }
 
+function getEventChatEnabledForViewers(event) {
+  if (typeof event?.chatEnabledForViewers === "boolean") {
+    return event.chatEnabledForViewers;
+  }
+  return true;
+}
+
+function getLiveChatPermissions({ event, user, dbUser, effectiveScope }) {
+  const isHost = String(user?._id || "") === String(event?.creatorId || "");
+  const isAdmin = String(dbUser?.accountType || user?.accountType || "").toLowerCase() === "admin";
+
+  const mutedUserIds = Array.isArray(event?.mutedUserIds) ? event.mutedUserIds : [];
+  const isMuted = mutedUserIds.some((id) => String(id) === String(user?._id || ""));
+
+  const chatEnabledForViewers = getEventChatEnabledForViewers(event);
+
+  const isVip = dbUser?.isVip === true;
+  const tokenBalance = Number(dbUser?.tokenBalance || 0);
+
+  const isPaidEvent =
+    Number(event?.ticketPriceTokens || 0) > 0 ||
+    effectiveScope === "private";
+
+  if (isHost) {
+    return { canChat: true, reason: "HOST" };
+  }
+
+  if (isAdmin) {
+    return { canChat: true, reason: "ADMIN" };
+  }
+
+  if (!chatEnabledForViewers) {
+    return { canChat: false, reason: "CHAT_DISABLED" };
+  }
+
+  if (isMuted) {
+    return { canChat: false, reason: "MUTED" };
+  }
+
+  if (isPaidEvent) {
+    return { canChat: true, reason: "ALLOWED" };
+  }
+
+  if (isVip || tokenBalance > 0) {
+    return { canChat: true, reason: "ALLOWED" };
+  }
+
+  return { canChat: false, reason: "CHAT_NOT_ALLOWED" };
+}
+
 function shouldEscalateToAI(text) {
   if (!text) return false;
 
@@ -1455,25 +1505,35 @@ router.post("/:eventId/messages", auth, featureGuard("live"), async (req, res) =
       });
     }
 
-    // Gate finale chat:
-    // - host sempre ok
-    // - admin sempre ok
-    // - paid: già gestito da checkEventAccess
-    // - free public: solo VIP o utente con tokenBalance > 0
-    const isPaidEvent = Number(event.ticketPriceTokens || 0) > 0;
-    const isFreePublicViewerCase = !isHost && !isAdmin && effectiveScope === "public" && !isPaidEvent;
+    const chatPermissions = getLiveChatPermissions({
+      event,
+      user,
+      dbUser,
+      effectiveScope,
+    });
 
-    if (isFreePublicViewerCase) {
-      const isVip = dbUser.isVip === true;
-      const tokenBalance = Number(dbUser.tokenBalance || 0);
-
-      if (!isVip && tokenBalance <= 0) {
+    if (!chatPermissions.canChat) {
+      if (chatPermissions.reason === "CHAT_DISABLED") {
         return res.status(403).json({
           status: "error",
-          code: "CHAT_NOT_ALLOWED",
-          message: "Chat is reserved to VIP users or users with tokens",
+          code: "CHAT_DISABLED",
+          message: "Chat is currently disabled for viewers",
         });
       }
+
+      if (chatPermissions.reason === "MUTED") {
+        return res.status(403).json({
+          status: "error",
+          code: "MUTED",
+          message: "You are muted in this live chat",
+        });
+      }
+
+      return res.status(403).json({
+        status: "error",
+        code: "CHAT_NOT_ALLOWED",
+        message: "Chat is reserved to VIP users or users with tokens",
+      });
     }
 
     // snapshot displayName

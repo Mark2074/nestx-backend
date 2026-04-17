@@ -2988,26 +2988,20 @@ router.post("/:id/chat-toggle", auth, async (req, res) => {
       });
     }
 
-    if (!event.live) {
-      event.live = {};
-    }
-
     const current =
-      typeof event.live.chatEnabledForViewers === "boolean"
-        ? event.live.chatEnabledForViewers
-        : false;
+      typeof event.chatEnabledForViewers === "boolean"
+        ? event.chatEnabledForViewers
+        : true;
 
     let newValue;
 
-    // Se nel body c'è enableForViewers, lo usiamo
     if (typeof req.body.enableForViewers === "boolean") {
       newValue = req.body.enableForViewers;
     } else {
-      // altrimenti facciamo davvero "toggle"
       newValue = !current;
     }
 
-    event.live.chatEnabledForViewers = newValue;
+    event.chatEnabledForViewers = newValue;
     await event.save();
 
     return res.status(200).json({
