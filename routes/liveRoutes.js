@@ -23,6 +23,7 @@ const {
   ensureHostParticipantForRoom,
   issueViewerParticipantToken,
   markHostRealtimeState,
+  startMeetingLivestream,
 } = require("../services/realtimeKitService");
 
 // helper: normalizza scope (public/private)
@@ -423,6 +424,108 @@ router.post("/token", auth, featureGuard("live"), async (req, res) => {
     return res.status(500).json({
       status: "error",
       message: "Internal error while generating live token",
+    });
+  }
+});
+
+/**
+ * @route POST /api/live/:eventId/start-broadcast
+ * @desc Start real provider broadcast for the host meeting
+ * @access Private
+ */
+router.post("/:eventId/start-broadcast", auth, featureGuard("live"), async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({
+        status: "error",
+        message: "Unauthenticated user",
+      });
+    }
+
+    const eventId = String(req.params.eventId || "").trim();
+    if (!eventId || eventId.length < 10) {
+      return res.status(400).json({
+        status: "error",
+        message: "Invalid event ID",
+      });
+    }
+
+    const requestedScope = getScopeFromReq(req);
+
+    const event = await Event.findById(eventId).exec();
+    if (!event) {
+      return res.status(404).json({
+        status: "error",
+        message: "Event not found",
+      });
+    }
+
+    const isHost = String(user._id) === String(event.creatorId);
+    const isAdmin = String(user.accountType || "").toLowerCase() === "admin";
+
+    if (!isHost && !isAdmin) {
+      return res.status(403).json({
+        status: "error",
+        code: "ACCESS_DENIED",
+        message: "Access denied",
+      });
+    }
+
+    const effectiveScope =
+      requestedScope === "private" ? "private" : "public";
+
+    const ensuredMeeting = await ensureMeetingForRoom({
+      event,
+      scope: effectiveScope,
+    });
+
+    const livestream = await startMeetingLivestream({
+      meetingId: ensuredMeeting.meetingId,
+    });
+
+    await markHostRealtimeState({
+      eventId: event._id,
+      scope: effectiveScope,
+      state: "broadcasting",
+      broadcastStarted: true,
+    });
+
+    return res.status(200).json({
+      status: "success",
+      data: {
+        eventId: String(event._id),
+        scope: effectiveScope,
+        provider: "cloudflare",
+        meetingId: ensuredMeeting.meetingId,
+        livestreamId: livestream?.livestreamId || null,
+        livestreamSessionId: livestream?.sessionId || null,
+        playbackUrl: livestream?.playbackUrl || null,
+        alreadyActive: Boolean(livestream?.alreadyActive),
+      },
+    });
+  } catch (err) {
+    console.error("Error during start-broadcast:", err);
+
+    if (err?.code === "MISSING_ENV") {
+      return res.status(500).json({
+        status: "error",
+        code: "REALTIME_CONFIG_MISSING",
+        message: err.message,
+      });
+    }
+
+    if (err?.code === "CF_API_ERROR") {
+      return res.status(502).json({
+        status: "error",
+        code: "REALTIME_PROVIDER_ERROR",
+        message: "Cloudflare Realtime error",
+      });
+    }
+
+    return res.status(500).json({
+      status: "error",
+      message: "Internal error while starting provider broadcast",
     });
   }
 });

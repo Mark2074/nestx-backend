@@ -396,6 +396,117 @@ async function markHostRealtimeState({
   });
 }
 
+function normalizeActiveLivestreamPayload(payload) {
+  if (!payload) return null;
+
+  if (Array.isArray(payload)) {
+    return payload[0] || null;
+  }
+
+  if (Array.isArray(payload?.items)) {
+    return payload.items[0] || null;
+  }
+
+  if (Array.isArray(payload?.livestreams)) {
+    return payload.livestreams[0] || null;
+  }
+
+  return payload;
+}
+
+async function getActiveMeetingLivestream({ meetingId }) {
+  const cfg = getRealtimeKitConfig();
+  const apiBase = buildApiBase(cfg);
+
+  try {
+    const response = await cfFetchJson(
+      `${apiBase}/meetings/${meetingId}/active-livestream`,
+      {
+        method: "GET",
+        headers: {
+          "Authorization": `Bearer ${cfg.apiToken}`,
+        },
+      }
+    );
+
+    const raw = response?.data || response?.result || null;
+    const active = normalizeActiveLivestreamPayload(raw);
+
+    if (!active) return null;
+
+    return {
+      livestreamId:
+        active?.id ||
+        active?.livestreamId ||
+        active?.livestream_id ||
+        null,
+      sessionId:
+        active?.livestream_session_id ||
+        active?.livestreamSessionId ||
+        active?.sessionId ||
+        null,
+      playbackUrl:
+        active?.playback?.url ||
+        active?.playback_url ||
+        active?.url ||
+        null,
+      raw: active,
+    };
+  } catch (err) {
+    if (Number(err?.httpStatus || 0) === 404) {
+      return null;
+    }
+    throw err;
+  }
+}
+
+async function startMeetingLivestream({ meetingId }) {
+  const alreadyActive = await getActiveMeetingLivestream({ meetingId });
+  if (alreadyActive?.livestreamId || alreadyActive?.sessionId || alreadyActive?.playbackUrl) {
+    return {
+      alreadyActive: true,
+      ...alreadyActive,
+    };
+  }
+
+  const cfg = getRealtimeKitConfig();
+  const apiBase = buildApiBase(cfg);
+
+  const response = await cfFetchJson(
+    `${apiBase}/meetings/${meetingId}/livestreams`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${cfg.apiToken}`,
+      },
+      body: JSON.stringify({}),
+    }
+  );
+
+  const raw = response?.data || response?.result || null;
+
+  return {
+    alreadyActive: false,
+    livestreamId:
+      raw?.id ||
+      raw?.livestreamId ||
+      raw?.livestream_id ||
+      null,
+    sessionId:
+      raw?.livestream_session_id ||
+      raw?.livestreamSessionId ||
+      raw?.sessionId ||
+      null,
+    playbackUrl:
+      raw?.playback?.url ||
+      raw?.playback_url ||
+      raw?.url ||
+      null,
+    raw,
+  };
+}
+
 module.exports = {
   getRealtimeKitConfig,
   getRoomRuntimeFromEvent,
@@ -404,4 +515,6 @@ module.exports = {
   issueViewerParticipantToken,
   markHostRealtimeState,
   refreshParticipantToken,
+  getActiveMeetingLivestream,
+  startMeetingLivestream,
 };
