@@ -4567,25 +4567,48 @@ router.post("/:id/join", auth, featureGuard("live"), async (req, res) => {
         ? liveMeta.chatEnabledForViewers
         : (typeof event.chatEnabledForViewers === "boolean" ? event.chatEnabledForViewers : false);
 
-    // Chat gate (coerente con decisione):
-    // - Host sempre
-    // - Se evento a pagamento (ticketPriceTokens>0) => chi ha accesso può chattare (se chatEnabledForViewers e non muted)
-    // - Se evento free => VIP sempre, Base solo se tokenBalance>0 (se chatEnabledForViewers e non muted)
-    const isAdmin = String(getAccountTypeFromUser(user) || "").toLowerCase() === "admin";
+    // carico dati aggiornati user dal DB per evitare valori stale su req.user
+    const dbUser = await User.findById(user._id)
+      .select("isVip tokenBalance accountType")
+      .lean()
+      .exec();
+
+    const isAdmin = String(dbUser?.accountType || getAccountTypeFromUser(user) || "").toLowerCase() === "admin";
+    const isVip = dbUser?.isVip === true;
+    const tokenBalance = Number(dbUser?.tokenBalance || 0);
+
     const isPaidEvent = Number(event.ticketPriceTokens || 0) > 0 || effectiveScope === "private";
 
-    const canChat =
-      role === "host" || isAdmin
-        ? true
-        : (chatEnabledForViewers && !isMuted)
-          ? (isPaidEvent
-              ? true
-              : (user.isVip === true || Number(user.tokenBalance || 0) > 0))
-          : false;
+    let canChat = false;
+    let canChatReason = "VIP_OR_TOKENS_REQUIRED";
+
+    if (role === "host") {
+      canChat = true;
+      canChatReason = "HOST";
+    } else if (isAdmin) {
+      canChat = true;
+      canChatReason = "ADMIN";
+    } else if (!chatEnabledForViewers) {
+      canChat = false;
+      canChatReason = "CHAT_DISABLED";
+    } else if (isMuted) {
+      canChat = false;
+      canChatReason = "MUTED";
+    } else if (isPaidEvent) {
+      canChat = true;
+      canChatReason = "ALLOWED";
+    } else if (isVip || tokenBalance > 0) {
+      canChat = true;
+      canChatReason = "ALLOWED";
+    } else {
+      canChat = false;
+      canChatReason = "VIP_OR_TOKENS_REQUIRED";
+    }
 
     const permissions = {
       canPublish: role === "host",
       canChat,
+      canChatReason,
       canVote: false,
     };
 
