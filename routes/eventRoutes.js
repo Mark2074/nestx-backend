@@ -21,6 +21,7 @@ const crypto = require("crypto");
 const { debitUserTokensBuckets } = require("../services/tokenDebitService");
 const Adv = require("../models/adv");
 const { detectContentSafety } = require("../utils/contentSafety");
+const { resetRuntimeForScope } = require("../services/realtimeKitService");
 
 router.get('/ping-events', (req, res) => {
   res.json({ status: 'ok', source: 'eventRoutes' });
@@ -2283,6 +2284,32 @@ router.post("/:id/finish", auth, featureGuard("live"), async (req, res) => {
       finishSession.endSession();
     }
 
+    try {
+      await resetRuntimeForScope({
+        eventId: event._id,
+        scope: "public",
+        endedAt: new Date(),
+        roomStatus: "ended",
+        clearPresence: true,
+        privateSessionCounter: null,
+      });
+
+      const privateCounter = Number(event?.privateSessionCounter || 0);
+
+      if (event?.privateSession?.roomId || event?.accessScope === "private") {
+        await resetRuntimeForScope({
+          eventId: event._id,
+          scope: "private",
+          endedAt: new Date(),
+          roomStatus: "ended",
+          clearPresence: true,
+          privateSessionCounter: privateCounter,
+        });
+      }
+    } catch (e) {
+      console.error("RESET_RUNTIME_ON_FINISH_FAILED", e?.message || e);
+    }
+
     // 🔻 Disable any ADV linked to this event (best-effort)
     try {
       await Adv.updateMany(
@@ -2676,6 +2703,32 @@ router.post("/:id/cancel", auth, featureGuard("live"), async (req, res) => {
       throw e;
     } finally {
       session.endSession();
+    }
+
+    try {
+      await resetRuntimeForScope({
+        eventId: event._id,
+        scope: "public",
+        endedAt: new Date(),
+        roomStatus: "ended",
+        clearPresence: true,
+        privateSessionCounter: null,
+      });
+
+      const privateCounter = Number(event?.privateSessionCounter || 0);
+
+      if (event?.privateSession?.roomId || event?.accessScope === "private") {
+        await resetRuntimeForScope({
+          eventId: event._id,
+          scope: "private",
+          endedAt: new Date(),
+          roomStatus: "ended",
+          clearPresence: true,
+          privateSessionCounter: privateCounter,
+        });
+      }
+    } catch (e) {
+      console.error("RESET_RUNTIME_ON_CANCEL_FAILED", e?.message || e);
     }
 
     // 🔻 Disable any ADV linked to this event (best-effort)

@@ -23,7 +23,9 @@ const {
   ensureHostParticipantForRoom,
   issueViewerParticipantToken,
   markHostRealtimeState,
+  markHostHeartbeat,
   startMeetingLivestream,
+  resetRuntimeForScope,
 } = require("../services/realtimeKitService");
 
 // helper: normalizza scope (public/private)
@@ -35,6 +37,9 @@ function getScopeFromReq(req) {
 
 const PRESENCE_TTL_MS = 40 * 1000;
 const PUBLIC_ROOM_HARD_CAP = 200;
+
+const HOST_STALE_MS = 20 * 1000;
+const HOST_DISCONNECT_GRACE_MS = 2 * 60 * 1000;
 
 function getPrivateSessionCounterForScope(event, scope) {
   if (scope !== "private") return null;
@@ -118,6 +123,174 @@ async function recountRoomViewers({ eventId, scope, creatorId, privateSessionCou
 
   const viewersNow = await LivePresence.countDocuments(countFilter);
   return { viewersNow, cutoff };
+}
+
+function getRuntimeBasePath(scope) {
+  return scope === "private" ? "privateSession" : "live";
+}
+
+function getHostRuntimeForScope(event, scope) {
+  return scope === "private"
+    ? (event?.privateSession || {})
+    : (event?.live || {});
+}
+
+async function syncEventViewerCountFromTruth(eventId, viewersNow) {
+  try {
+    await Event.updateOne(
+      { _id: eventId },
+      { $set: { viewerCount: Number(viewersNow || 0) } }
+    );
+  } catch {}
+}
+
+async function startHostDisconnectGraceIfNeeded({ event, scope }) {
+  const runtime = getHostRuntimeForScope(event, scope);
+  const base = getRuntimeBasePath(scope);
+  const now = Date.now();
+
+  const lastSeenAt = runtime?.hostLastSeenAt ? new Date(runtime.hostLastSeenAt).getTime() : 0;
+  const hostRealtimeState = String(runtime?.hostRealtimeState || "idle").trim().toLowerCase();
+  const disconnectState = String(runtime?.hostDisconnectState || "offline").trim().toLowerCase();
+
+  if (!["setup", "joined", "broadcasting"].includes(hostRealtimeState)) {
+    return {
+      changed: false,
+      state: disconnectState || "offline",
+      graceExpiresAt: runtime?.hostDisconnectGraceExpiresAt || null,
+    };
+  }
+
+  if (!lastSeenAt) {
+    return { changed: false, state: disconnectState || "offline", graceExpiresAt: runtime?.hostDisconnectGraceExpiresAt || null };
+  }
+
+  if (now - lastSeenAt < HOST_STALE_MS) {
+    return {
+      changed: false,
+      state: disconnectState === "grace" ? "online" : disconnectState || "online",
+      graceExpiresAt: runtime?.hostDisconnectGraceExpiresAt || null,
+    };
+  }
+
+  if (disconnectState === "grace" && runtime?.hostDisconnectGraceExpiresAt) {
+    return {
+      changed: false,
+      state: "grace",
+      graceExpiresAt: runtime.hostDisconnectGraceExpiresAt,
+    };
+  }
+
+  const graceStartedAt = new Date();
+  const graceExpiresAt = new Date(graceStartedAt.getTime() + HOST_DISCONNECT_GRACE_MS);
+
+  await Event.updateOne(
+    { _id: event._id },
+    {
+      $set: {
+        [`${base}.hostDisconnectState`]: "grace",
+        [`${base}.hostDisconnectGraceStartedAt`]: graceStartedAt,
+        [`${base}.hostDisconnectGraceExpiresAt`]: graceExpiresAt,
+      },
+    }
+  );
+
+  return {
+    changed: true,
+    state: "grace",
+    graceExpiresAt,
+  };
+}
+
+async function autoFinishEventForHostTimeout({ event, scope }) {
+  const now = new Date();
+  const privateSessionCounter = getPrivateSessionCounterForScope(event, scope);
+
+  const baseUpdate =
+    scope === "private"
+      ? {
+          $set: {
+            status: "finished",
+            "privateSession.hostRealtimeState": "ended",
+            "privateSession.hostDisconnectState": "offline",
+            "privateSession.hostDisconnectGraceStartedAt": null,
+            "privateSession.hostDisconnectGraceExpiresAt": null,
+            "privateSession.autoFinishReason": "HOST_DISCONNECTED_TIMEOUT",
+            "privateSession.endedAt": now,
+          },
+        }
+      : {
+          $set: {
+            status: "finished",
+            "live.endedAt": now,
+            "live.hostRealtimeState": "ended",
+            "live.hostDisconnectState": "offline",
+            "live.hostDisconnectGraceStartedAt": null,
+            "live.hostDisconnectGraceExpiresAt": null,
+            "live.autoFinishReason": "HOST_DISCONNECTED_TIMEOUT",
+          },
+        };
+
+  await Event.updateOne(
+    { _id: event._id, status: "live" },
+    baseUpdate
+  );
+
+  await resetRuntimeForScope({
+    eventId: event._id,
+    scope,
+    endedAt: now,
+    roomStatus: "ended",
+    clearPresence: true,
+    privateSessionCounter,
+  });
+
+  await syncEventViewerCountFromTruth(event._id, 0);
+}
+
+async function evaluateHostLifecycle({ event, scope }) {
+  if (String(event?.status || "") !== "live") {
+    return {
+      hostDisconnectState: "offline",
+      hostGraceActive: false,
+      hostGraceExpiresAt: null,
+      autoFinished: false,
+    };
+  }
+
+  const runtime = getHostRuntimeForScope(event, scope);
+  const graceResult = await startHostDisconnectGraceIfNeeded({ event, scope });
+
+  const disconnectState =
+    graceResult?.state ||
+    String(runtime?.hostDisconnectState || "offline").trim().toLowerCase();
+
+  const graceExpiresAt =
+    graceResult?.graceExpiresAt ||
+    runtime?.hostDisconnectGraceExpiresAt ||
+    null;
+
+  if (
+    disconnectState === "grace" &&
+    graceExpiresAt &&
+    new Date(graceExpiresAt).getTime() <= Date.now()
+  ) {
+    await autoFinishEventForHostTimeout({ event, scope });
+
+    return {
+      hostDisconnectState: "offline",
+      hostGraceActive: false,
+      hostGraceExpiresAt: null,
+      autoFinished: true,
+    };
+  }
+
+  return {
+    hostDisconnectState: disconnectState || "offline",
+    hostGraceActive: disconnectState === "grace",
+    hostGraceExpiresAt: disconnectState === "grace" ? graceExpiresAt : null,
+    autoFinished: false,
+  };
 }
 
 // Anti-spam minimale: 1 msg/sec per user per event
@@ -541,6 +714,11 @@ router.post("/:eventId/start-broadcast", auth, featureGuard("live"), async (req,
       broadcastStarted: true,
     });
 
+    await markHostHeartbeat({
+      eventId: event._id,
+      scope: effectiveScope,
+    });
+
     return res.status(200).json({
       status: "success",
       data: {
@@ -635,6 +813,13 @@ router.post("/:eventId/host-realtime-state", auth, featureGuard("live"), async (
       broadcastStarted: nextState === "broadcasting",
     });
 
+    if (["setup", "joined", "broadcasting"].includes(nextState)) {
+      await markHostHeartbeat({
+        eventId,
+        scope,
+      });
+    }
+
     return res.status(200).json({
       status: "success",
       data: {
@@ -648,6 +833,67 @@ router.post("/:eventId/host-realtime-state", auth, featureGuard("live"), async (
     return res.status(500).json({
       status: "error",
       message: "Internal error while syncing host realtime state",
+    });
+  }
+});
+
+/**
+ * @route POST /api/live/:eventId/host-ping
+ * @desc Host heartbeat for disconnect grace handling
+ * @access Private
+ */
+router.post("/:eventId/host-ping", auth, featureGuard("live"), async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ status: "error", message: "Unauthenticated user" });
+    }
+
+    const eventId = String(req.params.eventId || "").trim();
+    if (!eventId || eventId.length < 10) {
+      return res.status(400).json({ status: "error", message: "Invalid event ID" });
+    }
+
+    const scope = getScopeFromReq(req);
+
+    const event = await Event.findById(eventId)
+      .select("_id creatorId status")
+      .lean()
+      .exec();
+
+    if (!event) {
+      return res.status(404).json({ status: "error", message: "Event not found" });
+    }
+
+    const isHost = String(user._id) === String(event.creatorId);
+    const isAdmin = String(user.accountType || "").toLowerCase() === "admin";
+
+    if (!isHost && !isAdmin) {
+      return res.status(403).json({
+        status: "error",
+        code: "ACCESS_DENIED",
+        message: "Access denied",
+      });
+    }
+
+    const heartbeatAt = await markHostHeartbeat({
+      eventId,
+      scope,
+    });
+
+    return res.status(200).json({
+      status: "success",
+      data: {
+        eventId,
+        scope,
+        heartbeatAt,
+      },
+    });
+  } catch (err) {
+    console.error("Error during host-ping:", err);
+    return res.status(500).json({
+      status: "error",
+      message: "Internal error while pinging host state",
     });
   }
 });
@@ -709,6 +955,19 @@ router.post("/:eventId/join-room", auth, featureGuard("live"), async (req, res) 
 
     const effectiveScope = access.authorizedScope;
     const authorizedRoomId = access.authorizedRoomId || null;
+
+    const hostLifecycle = await evaluateHostLifecycle({
+      event,
+      scope: access.authorizedScope,
+    });
+
+    if (hostLifecycle.autoFinished) {
+      return res.status(410).json({
+        status: "error",
+        code: "EVENT_ENDED",
+        message: "Event ended because host disconnected",
+      });
+    }
 
     if (!effectiveScope) {
       return res.status(403).json({
@@ -862,12 +1121,10 @@ router.post("/:eventId/join-room", auth, featureGuard("live"), async (req, res) 
     await liveRoom.save();
 
     // Optional: keep event.viewerCount aligned for UI
-    try {
-      await Event.updateOne(
-        { _id: event._id },
-        { $set: { viewerCount: Number(liveRoom.currentViewersCount || 0) } }
-      );
-    } catch {}
+    await syncEventViewerCountFromTruth(
+      event._id,
+      Number(liveRoom.currentViewersCount || 0)
+    );
 
     return res.status(200).json({
       status: "success",
@@ -885,6 +1142,9 @@ router.post("/:eventId/join-room", auth, featureGuard("live"), async (req, res) 
         privateSessionCounter,
         viewersTtlMs: PRESENCE_TTL_MS,
         viewersCutoff: cutoff,
+        hostDisconnectState: hostLifecycle.hostDisconnectState,
+        hostGraceActive: hostLifecycle.hostGraceActive,
+        hostGraceExpiresAt: hostLifecycle.hostGraceExpiresAt,
         role: isHost ? "host" : "viewer",
         isHost: false
       },
@@ -994,9 +1254,7 @@ router.post("/:eventId/leave-room", auth, featureGuard("live"), async (req, res)
     liveRoom.currentViewersCount = Number(viewersNow || 0);
     await liveRoom.save();
 
-    try {
-      await Event.updateOne({ _id: event._id }, { $set: { viewerCount: Number(viewersNow || 0) } });
-    } catch {}
+    await syncEventViewerCountFromTruth(event._id, Number(viewersNow || 0));
 
     return res.status(200).json({
       status: "success",
@@ -1058,6 +1316,19 @@ router.get("/:eventId/status", auth, featureGuard("live"), async (req, res) => {
     const effectiveScope = access.authorizedScope;
     const privateSessionCounter = getPrivateSessionCounterForScope(event, effectiveScope);
 
+    const hostLifecycle = await evaluateHostLifecycle({
+      event,
+      scope: effectiveScope,
+    });
+
+    if (hostLifecycle.autoFinished) {
+      return res.status(410).json({
+        status: "error",
+        code: "EVENT_ENDED",
+        message: "Event ended because host disconnected",
+      });
+    }
+
     if (!effectiveScope) {
       return res.status(403).json({
         status: "error",
@@ -1081,12 +1352,10 @@ router.get("/:eventId/status", auth, featureGuard("live"), async (req, res) => {
       })
     ).lean().exec();
 
-    // Optional: align LiveRoom counters to truth (no drift)
     try {
       if (liveRoomDoc) {
         const current = Number(liveRoomDoc.currentViewersCount || 0);
         const truth = Number(viewersNow || 0);
-
         const nextPeak = Math.max(Number(liveRoomDoc.peakViewersCount || 0), truth);
 
         if (current !== truth || nextPeak !== Number(liveRoomDoc.peakViewersCount || 0)) {
@@ -1097,6 +1366,8 @@ router.get("/:eventId/status", auth, featureGuard("live"), async (req, res) => {
         }
       }
     } catch {}
+
+    await syncEventViewerCountFromTruth(event._id, Number(viewersNow || 0));
 
     const ps = event.privateSession || null;
     
@@ -1118,6 +1389,9 @@ router.get("/:eventId/status", auth, featureGuard("live"), async (req, res) => {
         viewersCutoff: cutoff,
         privateSessionCounter,
         viewersTtlMs: PRESENCE_TTL_MS,
+        hostDisconnectState: hostLifecycle.hostDisconnectState,
+        hostGraceActive: hostLifecycle.hostGraceActive,
+        hostGraceExpiresAt: hostLifecycle.hostGraceExpiresAt,
 
         live: event.live || null,
 
@@ -1198,6 +1472,19 @@ router.post("/:eventId/ping", auth, featureGuard("live"), async (req, res) => {
     const privateSessionCounter = getPrivateSessionCounterForScope(event, effectiveScope);
     const roomId = getRoomIdForScope(event, effectiveScope, authorizedRoomId);
 
+    const hostLifecycle = await evaluateHostLifecycle({
+      event,
+      scope: effectiveScope,
+    });
+
+    if (hostLifecycle.autoFinished) {
+      return res.status(410).json({
+        status: "error",
+        code: "EVENT_ENDED",
+        message: "Event ended because host disconnected",
+      });
+    }
+
     const now = new Date();
 
     const presenceFilter = buildPresenceFilter({
@@ -1241,6 +1528,13 @@ router.post("/:eventId/ping", auth, featureGuard("live"), async (req, res) => {
           }
         );
 
+    if (isHost) {
+      await markHostHeartbeat({
+        eventId: event._id,
+        scope: effectiveScope,
+      });
+    }
+
     await LiveRoom.updateOne(
       buildRoomFilter({
         eventId: event._id,
@@ -1281,7 +1575,8 @@ router.post("/:eventId/ping", auth, featureGuard("live"), async (req, res) => {
       }
     );
 
-    // response
+    await syncEventViewerCountFromTruth(event._id, Number(viewersNow || 0));
+
     return res.status(200).json({
       status: "success",
       data: {
@@ -1295,6 +1590,9 @@ router.post("/:eventId/ping", auth, featureGuard("live"), async (req, res) => {
         privateSessionCounter,
         currentViewersCount: Number(viewersNow || 0),
         viewersTtlMs: PRESENCE_TTL_MS,
+        hostDisconnectState: hostLifecycle.hostDisconnectState,
+        hostGraceActive: hostLifecycle.hostGraceActive,
+        hostGraceExpiresAt: hostLifecycle.hostGraceExpiresAt,
       },
     });
   } catch (err) {

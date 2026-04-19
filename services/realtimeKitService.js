@@ -1,4 +1,6 @@
 const Event = require("../models/event");
+const LiveRoom = require("../models/LiveRoom");
+const LivePresence = require("../models/LivePresence");
 
 function getRequiredEnv(name) {
   const value = String(process.env[name] || "").trim();
@@ -97,6 +99,114 @@ function getRoomRuntimeFromEvent(event, scope) {
   };
 }
 
+function getRuntimeBasePath(scope) {
+  return scope === "private" ? "privateSession" : "live";
+}
+
+async function resetRuntimeForScope({
+  eventId,
+  scope,
+  endedAt = null,
+  roomStatus = null,
+  clearPresence = false,
+  privateSessionCounter = null,
+}) {
+  const base = getRuntimeBasePath(scope);
+
+  const setPayload = {
+    [`${base}.meetingId`]: null,
+    [`${base}.provider`]: "cloudflare",
+    [`${base}.hostParticipantId`]: null,
+    [`${base}.hostParticipantName`]: null,
+    [`${base}.hostPresetName`]: null,
+    [`${base}.hostRealtimeState`]: "idle",
+    [`${base}.hostJoinedAt`]: null,
+    [`${base}.hostBroadcastStartedAt`]: null,
+    [`${base}.hostLastTokenIssuedAt`]: null,
+
+    // host lifecycle / grace
+    [`${base}.hostLastSeenAt`]: null,
+    [`${base}.hostDisconnectState`]: "offline",
+    [`${base}.hostDisconnectGraceStartedAt`]: null,
+    [`${base}.hostDisconnectGraceExpiresAt`]: null,
+    [`${base}.autoFinishReason`]: null,
+  };
+
+  if (endedAt) {
+    setPayload[`${base}.endedAt`] = endedAt;
+  }
+
+  await Event.updateOne(
+    { _id: eventId },
+    { $set: setPayload }
+  );
+
+  const roomFilter = {
+    eventId,
+    scope,
+  };
+
+  if (scope === "private") {
+    roomFilter.privateSessionCounter = Number(privateSessionCounter || 0);
+  }
+
+  const roomUpdate = {
+    $set: {
+      currentViewersCount: 0,
+    },
+  };
+
+  if (roomStatus) {
+    roomUpdate.$set.status = roomStatus;
+  }
+
+  await LiveRoom.updateMany(roomFilter, roomUpdate);
+
+  if (clearPresence) {
+    const presenceFilter = {
+      eventId,
+      scope,
+      status: "active",
+    };
+
+    if (scope === "private") {
+      presenceFilter.privateSessionCounter = Number(privateSessionCounter || 0);
+    }
+
+    await LivePresence.updateMany(
+      presenceFilter,
+      {
+        $set: {
+          status: "left",
+          leftAt: new Date(),
+        },
+      }
+    );
+  }
+}
+
+async function markHostHeartbeat({
+  eventId,
+  scope,
+}) {
+  const base = getRuntimeBasePath(scope);
+  const now = new Date();
+
+  await Event.updateOne(
+    { _id: eventId },
+    {
+      $set: {
+        [`${base}.hostLastSeenAt`]: now,
+        [`${base}.hostDisconnectState`]: "online",
+        [`${base}.hostDisconnectGraceStartedAt`]: null,
+        [`${base}.hostDisconnectGraceExpiresAt`]: null,
+      },
+    }
+  );
+
+  return now;
+}
+
 async function saveMeetingIdOnEvent({ eventId, scope, meetingId }) {
   if (scope === "private") {
     await Event.updateOne(
@@ -138,6 +248,9 @@ async function saveHostRuntimeOnEvent({
       ? "privateSession"
       : "live";
 
+  const now = new Date();
+  const normalizedState = String(hostRealtimeState || "idle").trim().toLowerCase();
+
   await Event.updateOne(
     { _id: eventId },
     {
@@ -146,10 +259,29 @@ async function saveHostRuntimeOnEvent({
         [`${base}.hostParticipantId`]: hostParticipantId ?? null,
         [`${base}.hostParticipantName`]: hostParticipantName ?? null,
         [`${base}.hostPresetName`]: hostPresetName ?? null,
-        [`${base}.hostRealtimeState`]: hostRealtimeState ?? "idle",
+        [`${base}.hostRealtimeState`]: normalizedState,
         [`${base}.hostJoinedAt`]: hostJoinedAt ?? null,
         [`${base}.hostBroadcastStartedAt`]: hostBroadcastStartedAt ?? null,
         [`${base}.hostLastTokenIssuedAt`]: hostLastTokenIssuedAt ?? null,
+
+        // heartbeat/grace runtime
+        [`${base}.hostLastSeenAt`]:
+          ["setup", "joined", "broadcasting"].includes(normalizedState)
+            ? now
+            : null,
+
+        [`${base}.hostDisconnectState`]:
+          ["setup", "joined", "broadcasting"].includes(normalizedState)
+            ? "online"
+            : "offline",
+
+        [`${base}.hostDisconnectGraceStartedAt`]: null,
+        [`${base}.hostDisconnectGraceExpiresAt`]: null,
+
+        [`${base}.autoFinishReason`]:
+          normalizedState === "ended"
+            ? "HOST_ENDED"
+            : null,
       },
     }
   );
@@ -514,7 +646,9 @@ module.exports = {
   ensureHostParticipantForRoom,
   issueViewerParticipantToken,
   markHostRealtimeState,
+  markHostHeartbeat,
   refreshParticipantToken,
   getActiveMeetingLivestream,
   startMeetingLivestream,
+  resetRuntimeForScope,
 };
