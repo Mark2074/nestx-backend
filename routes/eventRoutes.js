@@ -21,7 +21,7 @@ const crypto = require("crypto");
 const { debitUserTokensBuckets } = require("../services/tokenDebitService");
 const Adv = require("../models/adv");
 const { detectContentSafety } = require("../utils/contentSafety");
-const { resetRuntimeForScope } = require("../services/realtimeKitService");
+const { resetRuntimeForScope } = require("../services/liveRuntimeService");
 
 router.get('/ping-events', (req, res) => {
   res.json({ status: 'ok', source: 'eventRoutes' });
