@@ -19,14 +19,10 @@ const Notification = require("../models/notification");
 const AdminAuditLog = require("../models/AdminAuditLog");
 const User = require("../models/user");
 const {
-  ensureMeetingForRoom,
-  ensureHostParticipantForRoom,
-  issueViewerParticipantToken,
   markHostRealtimeState,
   markHostHeartbeat,
-  startMeetingLivestream,
   resetRuntimeForScope,
-} = require("../services/realtimeKitService");
+} = require("../services/liveRuntimeService");
 
 // helper: normalizza scope (public/private)
 function getScopeFromReq(req) {
@@ -494,11 +490,11 @@ async function createOrUpdateAILiveReport({
 }
 
 /**
- * @route POST /api/live/token
- * @desc Generate Cloudflare Realtime participant token for the authorized live room
+ * @route POST /api/live/:eventId/start-media
+ * @desc Mark host media as started without provider dependency
  * @access Private
  */
-router.post("/token", auth, featureGuard("live"), async (req, res) => {
+router.post("/:eventId/start-media", auth, featureGuard("live"), async (req, res) => {
   try {
     const user = req.user;
     if (!user) {
@@ -508,7 +504,7 @@ router.post("/token", auth, featureGuard("live"), async (req, res) => {
       });
     }
 
-    const eventId = String(req.body?.eventId || "").trim();
+    const eventId = String(req.params.eventId || "").trim();
     if (!eventId || eventId.length < 10) {
       return res.status(400).json({
         status: "error",
@@ -517,6 +513,8 @@ router.post("/token", auth, featureGuard("live"), async (req, res) => {
     }
 
     const requestedScope = getScopeFromReq(req);
+    const playbackUrlRaw = String(req.body?.playbackUrl || "").trim();
+    const streamKeyRaw = String(req.body?.streamKey || "").trim();
 
     const event = await Event.findById(eventId).exec();
     if (!event) {
@@ -528,51 +526,8 @@ router.post("/token", auth, featureGuard("live"), async (req, res) => {
 
     const isHost = String(user._id) === String(event.creatorId);
     const isAdmin = String(user.accountType || "").toLowerCase() === "admin";
-    const eventStatus = String(event.status || "").trim().toLowerCase();
-    const isEventLive = eventStatus === "live";
 
-    // PRE-LIVE HOST ACCESS:
-    // - host can get realtime token even when event is not live yet
-    // - admin does NOT get this bypass
-    // - viewers still require event live
-    if (!isEventLive && !isHost) {
-      return res.status(409).json({
-        status: "error",
-        code: "EVENT_NOT_LIVE",
-        message: "Event is not live",
-      });
-    }
-
-    let access;
-
-    if (isHost && !isEventLive) {
-      access = {
-        canEnter: true,
-        authorizedScope: requestedScope === "private" ? "private" : "public",
-        authorizedRoomId:
-          requestedScope === "private"
-            ? (event?.privateSession?.roomId || null)
-            : (event?.live?.roomId || String(event?._id || "")),
-      };
-    } else {
-      access = await checkEventAccess({
-        event,
-        userId: user._id,
-        requestedScope,
-        accountType: user.accountType,
-      });
-    }
-
-    if (!access.canEnter) {
-      return res.status(403).json({
-        status: "error",
-        code: access.reason || "ACCESS_DENIED",
-        message: "Access denied",
-      });
-    }
-
-    const effectiveScope = access.authorizedScope;
-    if (!effectiveScope || (effectiveScope !== "public" && effectiveScope !== "private")) {
+    if (!isHost && !isAdmin) {
       return res.status(403).json({
         status: "error",
         code: "ACCESS_DENIED",
@@ -580,83 +535,51 @@ router.post("/token", auth, featureGuard("live"), async (req, res) => {
       });
     }
 
-    const role = isHost ? "host" : "viewer";
+    const base = requestedScope === "private" ? "privateSession" : "live";
+    const now = new Date();
 
-    const ensuredMeeting = await ensureMeetingForRoom({
-      event,
-      scope: effectiveScope,
-    });
-
-    let participant;
-
-    if (isHost) {
-      participant = await ensureHostParticipantForRoom({
-        event,
-        scope: effectiveScope,
-        user,
-        meetingId: ensuredMeeting.meetingId,
-      });
-    } else {
-      participant = await issueViewerParticipantToken({
-        meetingId: ensuredMeeting.meetingId,
-        user,
-      });
-    }
+    await Event.updateOne(
+      { _id: event._id },
+      {
+        $set: {
+          [`${base}.hostMediaStatus`]: "live",
+          [`${base}.hostRealtimeState`]: "broadcasting",
+          [`${base}.hostBroadcastStartedAt`]: now,
+          [`${base}.hostLastSeenAt`]: now,
+          [`${base}.hostDisconnectState`]: "online",
+          [`${base}.hostDisconnectGraceStartedAt`]: null,
+          [`${base}.hostDisconnectGraceExpiresAt`]: null,
+          [`${base}.playbackUrl`]: playbackUrlRaw || null,
+          [`${base}.streamKey`]: streamKeyRaw || null,
+        },
+      }
+    );
 
     return res.status(200).json({
       status: "success",
       data: {
         eventId: String(event._id),
-        requestedScope,
-        authorizedScope: effectiveScope,
-        scope: effectiveScope,
-        roomId:
-          effectiveScope === "private"
-            ? (event?.privateSession?.roomId || access.authorizedRoomId || null)
-            : (event?.live?.roomId || String(event._id)),
-        provider: "cloudflare",
-        meetingId: ensuredMeeting.meetingId,
-        authToken: participant.token,
-        participantId: participant.participantId,
-        participantPreset: participant.presetName,
-        role,
-        isHost,
-        isAdmin,
-        viewerCountMode: "nestx_presence",
+        scope: requestedScope,
+        hostMediaStatus: "live",
+        playbackUrl: playbackUrlRaw || null,
+        streamKey: streamKeyRaw || null,
       },
     });
   } catch (err) {
-    console.error("Error during live token generation:", err);
-
-    if (err?.code === "MISSING_ENV") {
-      return res.status(500).json({
-        status: "error",
-        code: "REALTIME_CONFIG_MISSING",
-        message: err.message,
-      });
-    }
-
-    if (err?.code === "CF_API_ERROR") {
-      return res.status(502).json({
-        status: "error",
-        code: "REALTIME_PROVIDER_ERROR",
-        message: "Cloudflare Realtime error",
-      });
-    }
-
+    console.error("Error during start-media:", err);
     return res.status(500).json({
       status: "error",
-      message: "Internal error while generating live token",
+      message: "Internal error while starting live media",
     });
   }
 });
 
 /**
- * @route POST /api/live/:eventId/start-broadcast
- * @desc Start real provider broadcast for the host meeting
+ * @route POST /api/live/:eventId/stop-media
+ * @desc Mark host media as stopped without provider dependency
  * @access Private
  */
-router.post("/:eventId/start-broadcast", auth, featureGuard("live"), async (req, res) => {
+router.post("/:eventId/stop-media", auth, featureGuard("live"), async (req, res) => {
   try {
     const user = req.user;
     if (!user) {
@@ -695,65 +618,31 @@ router.post("/:eventId/start-broadcast", auth, featureGuard("live"), async (req,
       });
     }
 
-    const effectiveScope =
-      requestedScope === "private" ? "private" : "public";
+    const base = requestedScope === "private" ? "privateSession" : "live";
 
-    const ensuredMeeting = await ensureMeetingForRoom({
-      event,
-      scope: effectiveScope,
-    });
-
-    const livestream = await startMeetingLivestream({
-      meetingId: ensuredMeeting.meetingId,
-    });
-
-    await markHostRealtimeState({
-      eventId: event._id,
-      scope: effectiveScope,
-      state: "broadcasting",
-      broadcastStarted: true,
-    });
-
-    await markHostHeartbeat({
-      eventId: event._id,
-      scope: effectiveScope,
-    });
+    await Event.updateOne(
+      { _id: event._id },
+      {
+        $set: {
+          [`${base}.hostMediaStatus`]: "idle",
+          [`${base}.playbackUrl`]: null,
+        },
+      }
+    );
 
     return res.status(200).json({
       status: "success",
       data: {
         eventId: String(event._id),
-        scope: effectiveScope,
-        provider: "cloudflare",
-        meetingId: ensuredMeeting.meetingId,
-        livestreamId: livestream?.livestreamId || null,
-        livestreamSessionId: livestream?.sessionId || null,
-        playbackUrl: livestream?.playbackUrl || null,
-        alreadyActive: Boolean(livestream?.alreadyActive),
+        scope: requestedScope,
+        hostMediaStatus: "idle",
       },
     });
   } catch (err) {
-    console.error("Error during start-broadcast:", err);
-
-    if (err?.code === "MISSING_ENV") {
-      return res.status(500).json({
-        status: "error",
-        code: "REALTIME_CONFIG_MISSING",
-        message: err.message,
-      });
-    }
-
-    if (err?.code === "CF_API_ERROR") {
-      return res.status(502).json({
-        status: "error",
-        code: "REALTIME_PROVIDER_ERROR",
-        message: "Cloudflare Realtime error",
-      });
-    }
-
+    console.error("Error during stop-media:", err);
     return res.status(500).json({
       status: "error",
-      message: "Internal error while starting provider broadcast",
+      message: "Internal error while stopping live media",
     });
   }
 });
@@ -1393,7 +1282,17 @@ router.get("/:eventId/status", auth, featureGuard("live"), async (req, res) => {
         hostGraceActive: hostLifecycle.hostGraceActive,
         hostGraceExpiresAt: hostLifecycle.hostGraceExpiresAt,
 
-        live: event.live || null,
+        live: event.live
+          ? {
+              ...event.live,
+              provider: undefined,
+              meetingId: undefined,
+              hostParticipantId: undefined,
+              hostParticipantName: undefined,
+              hostPresetName: undefined,
+              hostLastTokenIssuedAt: undefined,
+            }
+          : null,
 
         privateSession:
           ps && ps.isEnabled === true
@@ -1405,6 +1304,7 @@ router.get("/:eventId/status", auth, featureGuard("live"), async (req, res) => {
                 countdownSeconds: ps.countdownSeconds,
                 startedAt: ps.startedAt,
                 createdAt: ps.createdAt,
+                playbackUrl: ps.playbackUrl || null,
               }
             : null,
       },
