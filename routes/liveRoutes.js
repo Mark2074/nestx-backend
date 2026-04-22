@@ -37,6 +37,46 @@ const PUBLIC_ROOM_HARD_CAP = 200;
 const HOST_STALE_MS = 20 * 1000;
 const HOST_DISCONNECT_GRACE_MS = 2 * 60 * 1000;
 
+const OME_RTMP_URL = String(process.env.OME_RTMP_URL || "").trim();
+const OME_PLAYBACK_BASE_URL = String(process.env.OME_PLAYBACK_BASE_URL || "").trim().replace(/\/+$/, "");
+const OME_MANIFEST_NAME = String(process.env.OME_MANIFEST_NAME || "master.m3u8").trim() || "master.m3u8";
+
+function getOmeStreamKey(event) {
+  return String(event?._id || "").trim();
+}
+
+function buildOmePlaybackUrl(event) {
+  const streamKey = getOmeStreamKey(event);
+  if (!OME_PLAYBACK_BASE_URL || !streamKey) return null;
+  return `${OME_PLAYBACK_BASE_URL}/${streamKey}/${OME_MANIFEST_NAME}`;
+}
+
+async function probePlaybackUrl(playbackUrl) {
+  if (!playbackUrl) return false;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3000);
+
+  try {
+    const res = await fetch(playbackUrl, {
+      method: "GET",
+      signal: controller.signal,
+      headers: {
+        Accept: "application/vnd.apple.mpegurl,application/x-mpegURL,*/*",
+      },
+    });
+
+    if (!res.ok) return false;
+
+    const text = await res.text();
+    return typeof text === "string" && text.includes("#EXTM3U");
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function getPrivateSessionCounterForScope(event, scope) {
   if (scope !== "private") return null;
   return Number(event?.privateSessionCounter || 0);
@@ -490,6 +530,254 @@ async function createOrUpdateAILiveReport({
 }
 
 /**
+ * @route POST /api/live/:eventId/host/session
+ * @desc  Returns OME ingest/playback data for host console
+ * @access Private
+ */
+router.post("/:eventId/host/session", auth, featureGuard("live"), async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ status: "error", message: "Unauthenticated user" });
+    }
+
+    const eventId = String(req.params.eventId || "").trim();
+    if (!eventId || eventId.length < 10) {
+      return res.status(400).json({ status: "error", message: "Invalid event ID" });
+    }
+
+    const scope = getScopeFromReq(req);
+
+    const event = await Event.findById(eventId).exec();
+    if (!event) {
+      return res.status(404).json({ status: "error", message: "Event not found" });
+    }
+
+    const isHost = String(user._id) === String(event.creatorId);
+    const isAdmin = String(user.accountType || "").toLowerCase() === "admin";
+
+    if (!isHost && !isAdmin) {
+      return res.status(403).json({
+        status: "error",
+        code: "ACCESS_DENIED",
+        message: "Access denied",
+      });
+    }
+
+    if (!OME_RTMP_URL) {
+      return res.status(500).json({
+        status: "error",
+        code: "OME_RTMP_URL_MISSING",
+        message: "OME ingest url not configured",
+      });
+    }
+
+    const base = scope === "private" ? "privateSession" : "live";
+    const streamKey = getOmeStreamKey(event);
+    const playbackUrl =
+      String(event?.[base]?.playbackUrl || "").trim() || buildOmePlaybackUrl(event);
+
+    await Event.updateOne(
+      { _id: event._id },
+      {
+        $set: {
+          [`${base}.streamKey`]: streamKey,
+          [`${base}.playbackUrl`]: playbackUrl || null,
+        },
+      }
+    );
+
+    return res.status(200).json({
+      status: "success",
+      data: {
+        eventId: String(event._id),
+        scope,
+        roomId: getRoomIdForScope(event, scope, null),
+        rtmpUrl: OME_RTMP_URL,
+        streamKey,
+        playbackUrl: playbackUrl || null,
+        hostMediaStatus: String(event?.[base]?.hostMediaStatus || "idle"),
+      },
+    });
+  } catch (err) {
+    console.error("Error during host/session:", err);
+    return res.status(500).json({
+      status: "error",
+      message: "Internal error while creating host session",
+    });
+  }
+});
+
+/**
+ * @route POST /api/live/:eventId/viewer/session
+ * @desc  Returns playback url for authorized viewer
+ * @access Private
+ */
+router.post("/:eventId/viewer/session", auth, featureGuard("live"), async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ status: "error", message: "Unauthenticated user" });
+    }
+
+    const eventId = String(req.params.eventId || "").trim();
+    if (!eventId || eventId.length < 10) {
+      return res.status(400).json({ status: "error", message: "Invalid event ID" });
+    }
+
+    const requestedScope = getScopeFromReq(req);
+
+    const event = await Event.findById(eventId).exec();
+    if (!event) {
+      return res.status(404).json({ status: "error", message: "Event not found" });
+    }
+
+    const access = await checkEventAccess({
+      event,
+      userId: user._id,
+      requestedScope,
+      accountType: user.accountType,
+    });
+
+    if (!access.canEnter) {
+      return res.status(403).json({
+        status: "error",
+        code: access.reason || "ACCESS_DENIED",
+        message: "Access denied",
+      });
+    }
+
+    const effectiveScope = access.authorizedScope || "public";
+    const base = effectiveScope === "private" ? "privateSession" : "live";
+    const streamKey = getOmeStreamKey(event);
+    const playbackUrl =
+      String(event?.[base]?.playbackUrl || "").trim() || buildOmePlaybackUrl(event);
+
+    const isLive = await probePlaybackUrl(playbackUrl);
+
+    await Event.updateOne(
+      { _id: event._id },
+      {
+        $set: {
+          [`${base}.streamKey`]: streamKey,
+          [`${base}.playbackUrl`]: playbackUrl || null,
+          [`${base}.hostMediaStatus`]: isLive ? "live" : "idle",
+        },
+      }
+    );
+
+    return res.status(200).json({
+      status: "success",
+      data: {
+        eventId: String(event._id),
+        scope: effectiveScope,
+        authorizedScope: effectiveScope,
+        roomId: getRoomIdForScope(event, effectiveScope, access.authorizedRoomId || null),
+        playbackUrl: playbackUrl || null,
+        streamKey,
+        isLive,
+        hostMediaStatus: isLive ? "live" : "idle",
+      },
+    });
+  } catch (err) {
+    console.error("Error during viewer/session:", err);
+    return res.status(500).json({
+      status: "error",
+      message: "Internal error while creating viewer session",
+    });
+  }
+});
+
+/**
+ * @route GET /api/live/:eventId/media-status
+ * @desc  Probe OME playback and return real media status
+ * @access Private
+ */
+router.get("/:eventId/media-status", auth, featureGuard("live"), async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ status: "error", message: "Unauthenticated user" });
+    }
+
+    const eventId = String(req.params.eventId || "").trim();
+    if (!eventId || eventId.length < 10) {
+      return res.status(400).json({ status: "error", message: "Invalid event ID" });
+    }
+
+    const requestedScope = getScopeFromReq(req);
+
+    const event = await Event.findById(eventId).exec();
+    if (!event) {
+      return res.status(404).json({ status: "error", message: "Event not found" });
+    }
+
+    const isHost = String(user._id) === String(event.creatorId);
+    const isAdmin = String(user.accountType || "").toLowerCase() === "admin";
+
+    let effectiveScope = requestedScope;
+    let authorizedRoomId = null;
+
+    if (!isHost && !isAdmin) {
+      const access = await checkEventAccess({
+        event,
+        userId: user._id,
+        requestedScope,
+        accountType: user.accountType,
+      });
+
+      if (!access.canEnter) {
+        return res.status(403).json({
+          status: "error",
+          code: access.reason || "ACCESS_DENIED",
+          message: "Access denied",
+        });
+      }
+
+      effectiveScope = access.authorizedScope || "public";
+      authorizedRoomId = access.authorizedRoomId || null;
+    }
+
+    const base = effectiveScope === "private" ? "privateSession" : "live";
+    const streamKey = getOmeStreamKey(event);
+    const playbackUrl =
+      String(event?.[base]?.playbackUrl || "").trim() || buildOmePlaybackUrl(event);
+
+    const isLive = await probePlaybackUrl(playbackUrl);
+
+    await Event.updateOne(
+      { _id: event._id },
+      {
+        $set: {
+          [`${base}.streamKey`]: streamKey,
+          [`${base}.playbackUrl`]: playbackUrl || null,
+          [`${base}.hostMediaStatus`]: isLive ? "live" : "idle",
+        },
+      }
+    );
+
+    return res.status(200).json({
+      status: "success",
+      data: {
+        eventId: String(event._id),
+        scope: effectiveScope,
+        roomId: getRoomIdForScope(event, effectiveScope, authorizedRoomId),
+        playbackUrl: playbackUrl || null,
+        streamKey,
+        isLive,
+        hostMediaStatus: isLive ? "live" : "idle",
+      },
+    });
+  } catch (err) {
+    console.error("Error during media-status:", err);
+    return res.status(500).json({
+      status: "error",
+      message: "Internal error while checking media status",
+    });
+  }
+});
+
+/**
  * @route POST /api/live/:eventId/start-media
  * @desc Mark host media as started without provider dependency
  * @access Private
@@ -538,6 +826,9 @@ router.post("/:eventId/start-media", auth, featureGuard("live"), async (req, res
     const base = requestedScope === "private" ? "privateSession" : "live";
     const now = new Date();
 
+    const computedStreamKey = streamKeyRaw || getOmeStreamKey(event);
+    const computedPlaybackUrl = playbackUrlRaw || buildOmePlaybackUrl(event);
+
     await Event.updateOne(
       { _id: event._id },
       {
@@ -549,8 +840,8 @@ router.post("/:eventId/start-media", auth, featureGuard("live"), async (req, res
           [`${base}.hostDisconnectState`]: "online",
           [`${base}.hostDisconnectGraceStartedAt`]: null,
           [`${base}.hostDisconnectGraceExpiresAt`]: null,
-          [`${base}.playbackUrl`]: playbackUrlRaw || null,
-          [`${base}.streamKey`]: streamKeyRaw || null,
+          [`${base}.playbackUrl`]: computedPlaybackUrl || null,
+          [`${base}.streamKey`]: computedStreamKey || null,
         },
       }
     );
@@ -561,8 +852,8 @@ router.post("/:eventId/start-media", auth, featureGuard("live"), async (req, res
         eventId: String(event._id),
         scope: requestedScope,
         hostMediaStatus: "live",
-        playbackUrl: playbackUrlRaw || null,
-        streamKey: streamKeyRaw || null,
+        playbackUrl: computedPlaybackUrl || null,
+        streamKey: computedStreamKey || null,
       },
     });
   } catch (err) {
