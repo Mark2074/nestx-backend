@@ -51,6 +51,10 @@ function buildOmePlaybackUrl(event) {
   return `${OME_PLAYBACK_BASE_URL}/${streamKey}/${OME_MANIFEST_NAME}`;
 }
 
+function getCanonicalPlaybackUrl(event) {
+  return buildOmePlaybackUrl(event);
+}
+
 function sanitizePlaybackUrl(url, event) {
   const raw = String(url || "").trim();
   const fallback = buildOmePlaybackUrl(event);
@@ -587,7 +591,7 @@ router.post("/:eventId/host/session", auth, featureGuard("live"), async (req, re
 
     const base = scope === "private" ? "privateSession" : "live";
     const streamKey = getOmeStreamKey(event);
-    const playbackUrl = sanitizePlaybackUrl(event?.[base]?.playbackUrl, event);
+    const playbackUrl = getCanonicalPlaybackUrl(event);
 
     await Event.updateOne(
       { _id: event._id },
@@ -662,7 +666,7 @@ router.post("/:eventId/viewer/session", auth, featureGuard("live"), async (req, 
     const effectiveScope = access.authorizedScope || "public";
     const base = effectiveScope === "private" ? "privateSession" : "live";
     const streamKey = getOmeStreamKey(event);
-    const playbackUrl = sanitizePlaybackUrl(event?.[base]?.playbackUrl, event);
+    const playbackUrl = getCanonicalPlaybackUrl(event);
 
     const isLive = await probePlaybackUrl(playbackUrl);
 
@@ -751,7 +755,7 @@ router.get("/:eventId/media-status", auth, featureGuard("live"), async (req, res
 
     const base = effectiveScope === "private" ? "privateSession" : "live";
     const streamKey = getOmeStreamKey(event);
-    const playbackUrl = sanitizePlaybackUrl(event?.[base]?.playbackUrl, event);
+    const playbackUrl = getCanonicalPlaybackUrl(event);
 
     const isLive = await probePlaybackUrl(playbackUrl);
 
@@ -837,7 +841,7 @@ router.post("/:eventId/start-media", auth, featureGuard("live"), async (req, res
     const now = new Date();
 
     const computedStreamKey = streamKeyRaw || getOmeStreamKey(event);
-    const computedPlaybackUrl = sanitizePlaybackUrl(playbackUrlRaw, event);
+    const computedPlaybackUrl = getCanonicalPlaybackUrl(event);
 
     await Event.updateOne(
       { _id: event._id },
