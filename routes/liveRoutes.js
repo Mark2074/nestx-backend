@@ -51,6 +51,19 @@ function buildOmePlaybackUrl(event) {
   return `${OME_PLAYBACK_BASE_URL}/${streamKey}/${OME_MANIFEST_NAME}`;
 }
 
+function sanitizePlaybackUrl(url, event) {
+  const raw = String(url || "").trim();
+  const fallback = buildOmePlaybackUrl(event);
+
+  if (!raw) return fallback;
+
+  if (/^http:\/\//i.test(raw) && /^https:\/\//i.test(String(OME_PLAYBACK_BASE_URL || ""))) {
+    return fallback;
+  }
+
+  return raw;
+}
+
 async function probePlaybackUrl(playbackUrl) {
   if (!playbackUrl) return false;
 
@@ -574,8 +587,7 @@ router.post("/:eventId/host/session", auth, featureGuard("live"), async (req, re
 
     const base = scope === "private" ? "privateSession" : "live";
     const streamKey = getOmeStreamKey(event);
-    const playbackUrl =
-      String(event?.[base]?.playbackUrl || "").trim() || buildOmePlaybackUrl(event);
+    const playbackUrl = sanitizePlaybackUrl(event?.[base]?.playbackUrl, event);
 
     await Event.updateOne(
       { _id: event._id },
@@ -650,8 +662,7 @@ router.post("/:eventId/viewer/session", auth, featureGuard("live"), async (req, 
     const effectiveScope = access.authorizedScope || "public";
     const base = effectiveScope === "private" ? "privateSession" : "live";
     const streamKey = getOmeStreamKey(event);
-    const playbackUrl =
-      String(event?.[base]?.playbackUrl || "").trim() || buildOmePlaybackUrl(event);
+    const playbackUrl = sanitizePlaybackUrl(event?.[base]?.playbackUrl, event);
 
     const isLive = await probePlaybackUrl(playbackUrl);
 
@@ -740,8 +751,7 @@ router.get("/:eventId/media-status", auth, featureGuard("live"), async (req, res
 
     const base = effectiveScope === "private" ? "privateSession" : "live";
     const streamKey = getOmeStreamKey(event);
-    const playbackUrl =
-      String(event?.[base]?.playbackUrl || "").trim() || buildOmePlaybackUrl(event);
+    const playbackUrl = sanitizePlaybackUrl(event?.[base]?.playbackUrl, event);
 
     const isLive = await probePlaybackUrl(playbackUrl);
 
@@ -827,7 +837,7 @@ router.post("/:eventId/start-media", auth, featureGuard("live"), async (req, res
     const now = new Date();
 
     const computedStreamKey = streamKeyRaw || getOmeStreamKey(event);
-    const computedPlaybackUrl = playbackUrlRaw || buildOmePlaybackUrl(event);
+    const computedPlaybackUrl = sanitizePlaybackUrl(playbackUrlRaw, event);
 
     await Event.updateOne(
       { _id: event._id },
