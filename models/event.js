@@ -324,6 +324,48 @@ const EventSchema = new mongoose.Schema(
         type: Date,
         default: null,
       },
+      streamKey: {
+        type: String,
+        default: null,
+      },
+      playbackUrl: {
+        type: String,
+        default: null,
+      },
+      hostMediaStatus: {
+        type: String,
+        enum: ["idle", "live", "paused"],
+        default: "idle",
+      },
+      hostMediaSignature: {
+        type: String,
+        default: null,
+      },
+      hostMediaSignatureChangedAt: {
+        type: Date,
+        default: null,
+      },
+      hostMediaCheckedAt: {
+        type: Date,
+        default: null,
+      },
+      hostDisconnectState: {
+        type: String,
+        enum: ["offline", "online", "grace"],
+        default: "offline",
+      },
+      hostDisconnectGraceStartedAt: {
+        type: Date,
+        default: null,
+      },
+      hostDisconnectGraceExpiresAt: {
+        type: Date,
+        default: null,
+      },
+      autoFinishReason: {
+        type: String,
+        default: null,
+      },
       startedAt: {
         type: Date,
         default: null,
