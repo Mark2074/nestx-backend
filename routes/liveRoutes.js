@@ -393,73 +393,43 @@ async function evaluateHostLifecycle({ event, scope }) {
     };
   }
 
-  const runtime = getHostRuntimeForScope(event, scope);
   const base = getRuntimeBasePath(scope);
-
-  let graceResult = await startHostDisconnectGraceIfNeeded({ event, scope });
+  const runtime = getHostRuntimeForScope(event, scope);
 
   const playbackUrl = getCanonicalPlaybackUrl(event);
   const mediaProbe = await probePlaybackUrl(playbackUrl);
   const now = new Date();
 
-  const previousSignature = String(runtime?.hostMediaSignature || "");
-  const nextSignature = String(mediaProbe.signature || "");
+  const currentState = String(runtime?.hostDisconnectState || "offline")
+    .trim()
+    .toLowerCase();
 
-  const previousChangedAt = runtime?.hostMediaSignatureChangedAt
+  const currentGraceStartedAt = runtime?.hostDisconnectGraceStartedAt || null;
+  const currentGraceExpiresAt = runtime?.hostDisconnectGraceExpiresAt || null;
+
+  const currentSignature = String(runtime?.hostMediaSignature || "");
+  const nextSignature = String(mediaProbe?.signature || "");
+
+  const previousChangedAtMs = runtime?.hostMediaSignatureChangedAt
     ? new Date(runtime.hostMediaSignatureChangedAt).getTime()
     : 0;
 
-  let mediaIsAdvancing = false;
-  let mediaChangedAt = previousChangedAt ? new Date(previousChangedAt) : now;
+  const signatureChanged =
+    mediaProbe.ok &&
+    nextSignature &&
+    nextSignature !== currentSignature;
 
-  if (mediaProbe.ok && nextSignature && nextSignature !== previousSignature) {
-    mediaIsAdvancing = true;
-    mediaChangedAt = now;
+  const effectiveChangedAtMs = signatureChanged
+    ? now.getTime()
+    : previousChangedAtMs;
 
-    await Event.updateOne(
-      { _id: event._id },
-      {
-        $set: {
-          [`${base}.hostMediaStatus`]: "live",
-          [`${base}.hostMediaSignature`]: nextSignature,
-          [`${base}.hostMediaSignatureChangedAt`]: now,
-          [`${base}.hostMediaCheckedAt`]: now,
-          [`${base}.playbackUrl`]: playbackUrl || null,
-        },
-      }
-    );
+  const mediaAgeMs = effectiveChangedAtMs
+    ? Date.now() - effectiveChangedAtMs
+    : Number.MAX_SAFE_INTEGER;
 
-    if (String(runtime?.hostDisconnectState || "").toLowerCase() === "grace") {
-      await Event.updateOne(
-        { _id: event._id },
-        {
-          $set: {
-            [`${base}.hostDisconnectState`]: "online",
-            [`${base}.hostDisconnectGraceStartedAt`]: null,
-            [`${base}.hostDisconnectGraceExpiresAt`]: null,
-            [`${base}.hostMediaStatus`]: "live",
-          },
-        }
-      );
-
-      graceResult = {
-        changed: true,
-        state: "online",
-        graceExpiresAt: null,
-      };
-    }
-  } else {
-    await Event.updateOne(
-      { _id: event._id },
-      {
-        $set: {
-          [`${base}.hostMediaCheckedAt`]: now,
-        },
-      }
-    );
-  }
-
-  const hostRealtimeState = String(runtime?.hostRealtimeState || "idle").toLowerCase();
+  const hostRealtimeState = String(runtime?.hostRealtimeState || "idle")
+    .trim()
+    .toLowerCase();
 
   const hasBroadcastStarted =
     !!runtime?.hostBroadcastStartedAt ||
@@ -469,65 +439,20 @@ async function evaluateHostLifecycle({ event, scope }) {
     hasBroadcastStarted &&
     ["joined", "broadcasting"].includes(hostRealtimeState);
 
-  const effectiveChangedAtMs = mediaChangedAt
-    ? new Date(mediaChangedAt).getTime()
-    : previousChangedAt;
-
-  const mediaAgeMs = effectiveChangedAtMs ? Date.now() - effectiveChangedAtMs : 0;
+  const mediaLooksLive =
+    mediaProbe.ok &&
+    nextSignature &&
+    (signatureChanged || mediaAgeMs <= HOST_MEDIA_STALE_MS);
 
   const mediaLooksDead =
     shouldExpectMedia &&
-    !mediaIsAdvancing &&
-    (!mediaProbe.ok || !nextSignature || mediaAgeMs > HOST_MEDIA_STALE_MS);
-
-  const alreadyInGrace =
-    String(runtime?.hostDisconnectState || "").toLowerCase() === "grace" &&
-    runtime?.hostDisconnectGraceExpiresAt;
-
-  if (mediaLooksDead && alreadyInGrace) {
-    graceResult = {
-      changed: false,
-      state: "grace",
-      graceExpiresAt: runtime.hostDisconnectGraceExpiresAt,
-    };
-  }
-
-  if (mediaLooksDead && !alreadyInGrace) {
-    const graceStartedAt = new Date();
-    const graceExpiresAt = new Date(graceStartedAt.getTime() + HOST_DISCONNECT_GRACE_MS);
-
-    await Event.updateOne(
-      { _id: event._id },
-      {
-        $set: {
-          [`${base}.hostMediaStatus`]: "idle",
-          [`${base}.hostDisconnectState`]: "grace",
-          [`${base}.hostDisconnectGraceStartedAt`]: graceStartedAt,
-          [`${base}.hostDisconnectGraceExpiresAt`]: graceExpiresAt,
-        },
-      }
-    );
-
-    graceResult = {
-      changed: true,
-      state: "grace",
-      graceExpiresAt,
-    };
-  }
-
-  const disconnectState =
-    graceResult?.state ||
-    String(runtime?.hostDisconnectState || "offline").trim().toLowerCase();
-
-  const graceExpiresAt =
-    graceResult?.graceExpiresAt ||
-    runtime?.hostDisconnectGraceExpiresAt ||
-    null;
+    !mediaLooksLive;
 
   if (
-    disconnectState === "grace" &&
-    graceExpiresAt &&
-    new Date(graceExpiresAt).getTime() <= Date.now()
+    currentState === "grace" &&
+    currentGraceExpiresAt &&
+    new Date(currentGraceExpiresAt).getTime() <= Date.now() &&
+    mediaLooksDead
   ) {
     await autoFinishEventForHostTimeout({ event, scope });
 
@@ -539,10 +464,78 @@ async function evaluateHostLifecycle({ event, scope }) {
     };
   }
 
+  let nextState = currentState || "offline";
+  let nextGraceStartedAt = currentGraceStartedAt;
+  let nextGraceExpiresAt = currentGraceExpiresAt;
+  let nextHostMediaStatus = runtime?.hostMediaStatus || "idle";
+
+  if (mediaLooksLive) {
+    nextState = "online";
+    nextGraceStartedAt = null;
+    nextGraceExpiresAt = null;
+    nextHostMediaStatus = "live";
+  } else if (mediaLooksDead) {
+    if (currentState !== "grace" || !currentGraceExpiresAt) {
+      nextState = "grace";
+      nextGraceStartedAt = now;
+      nextGraceExpiresAt = new Date(now.getTime() + HOST_DISCONNECT_GRACE_MS);
+    } else {
+      nextState = "grace";
+      nextGraceStartedAt = currentGraceStartedAt;
+      nextGraceExpiresAt = currentGraceExpiresAt;
+    }
+
+    nextHostMediaStatus = "idle";
+  }
+
+  const updateSet = {
+    [`${base}.hostMediaCheckedAt`]: now,
+  };
+
+  let mustUpdate = false;
+
+  if (signatureChanged) {
+    updateSet[`${base}.hostMediaSignature`] = nextSignature;
+    updateSet[`${base}.hostMediaSignatureChangedAt`] = now;
+    updateSet[`${base}.playbackUrl`] = playbackUrl || null;
+    mustUpdate = true;
+  }
+
+  if (String(runtime?.hostMediaStatus || "idle") !== String(nextHostMediaStatus)) {
+    updateSet[`${base}.hostMediaStatus`] = nextHostMediaStatus;
+    mustUpdate = true;
+  }
+
+  const currentExpiresStr = currentGraceExpiresAt
+    ? new Date(currentGraceExpiresAt).toISOString()
+    : "";
+
+  const nextExpiresStr = nextGraceExpiresAt
+    ? new Date(nextGraceExpiresAt).toISOString()
+    : "";
+
+  const stateChanged =
+    currentState !== nextState ||
+    currentExpiresStr !== nextExpiresStr;
+
+  if (stateChanged) {
+    updateSet[`${base}.hostDisconnectState`] = nextState;
+    updateSet[`${base}.hostDisconnectGraceStartedAt`] = nextGraceStartedAt;
+    updateSet[`${base}.hostDisconnectGraceExpiresAt`] = nextGraceExpiresAt;
+    mustUpdate = true;
+  }
+
+  if (mustUpdate) {
+    await Event.updateOne(
+      { _id: event._id },
+      { $set: updateSet }
+    );
+  }
+
   return {
-    hostDisconnectState: disconnectState || "offline",
-    hostGraceActive: disconnectState === "grace",
-    hostGraceExpiresAt: disconnectState === "grace" ? graceExpiresAt : null,
+    hostDisconnectState: nextState,
+    hostGraceActive: nextState === "grace",
+    hostGraceExpiresAt: nextState === "grace" ? nextGraceExpiresAt : null,
     autoFinished: false,
   };
 }
