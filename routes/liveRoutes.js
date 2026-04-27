@@ -460,7 +460,14 @@ async function evaluateHostLifecycle({ event, scope }) {
   }
 
   const hostRealtimeState = String(runtime?.hostRealtimeState || "idle").toLowerCase();
-  const shouldExpectMedia = ["broadcasting"].includes(hostRealtimeState);
+
+  const hasBroadcastStarted =
+    !!runtime?.hostBroadcastStartedAt ||
+    String(event?.status || "").toLowerCase() === "live";
+
+  const shouldExpectMedia =
+    hasBroadcastStarted &&
+    ["joined", "broadcasting"].includes(hostRealtimeState);
 
   const effectiveChangedAtMs = mediaChangedAt
     ? new Date(mediaChangedAt).getTime()
