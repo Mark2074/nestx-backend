@@ -526,6 +526,16 @@ async function evaluateHostLifecycle({ event, scope }) {
   }
 
   if (mustUpdate) {
+    console.log("GRACE_WRITE_DEBUG", {
+      eventId: String(event?._id || ""),
+      scope,
+      at: new Date().toISOString(),
+      currentState,
+      currentGraceExpiresAt,
+      nextState,
+      nextGraceExpiresAt,
+      reason: "ABOUT_TO_WRITE_GRACE",
+    });
     await Event.updateOne(
       { _id: event._id },
       { $set: updateSet }
