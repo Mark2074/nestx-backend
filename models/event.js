@@ -334,7 +334,7 @@ const EventSchema = new mongoose.Schema(
       },
       hostMediaStatus: {
         type: String,
-        enum: ["idle", "live", "paused"],
+        enum: ["idle", "preview", "live", "paused"],
         default: "idle",
       },
       hostMediaSignature: {
