@@ -402,7 +402,13 @@ async function evaluateHostLifecycle({ event, scope }) {
   }
 
   const base = getRuntimeBasePath(scope);
-  const runtime = getHostRuntimeForScope(event, scope);
+  const freshEvent = await Event.findById(event._id)
+    .select("_id status live privateSession privateSessionCounter")
+    .lean()
+    .exec();
+
+  const effectiveEvent = freshEvent || event;
+  const runtime = getHostRuntimeForScope(effectiveEvent, scope);
 
   const playbackUrl = getCanonicalPlaybackUrl(event);
   const mediaProbe = await probePlaybackUrl(playbackUrl);
@@ -441,7 +447,7 @@ async function evaluateHostLifecycle({ event, scope }) {
 
   const hasBroadcastStarted =
     !!runtime?.hostBroadcastStartedAt ||
-    String(event?.status || "").toLowerCase() === "live";
+    String(effectiveEvent?.status || "").toLowerCase() === "live";
 
   const shouldExpectMedia =
     hasBroadcastStarted &&
@@ -462,7 +468,7 @@ async function evaluateHostLifecycle({ event, scope }) {
     new Date(currentGraceExpiresAt).getTime() <= Date.now() &&
     mediaLooksDead
   ) {
-    await autoFinishEventForHostTimeout({ event, scope });
+    await autoFinishEventForHostTimeout({ event: effectiveEvent, scope });
 
     return {
       hostDisconnectState: "offline",
