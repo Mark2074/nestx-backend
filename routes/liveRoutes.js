@@ -480,7 +480,11 @@ async function evaluateHostLifecycle({ event, scope }) {
     !mediaIsAdvancing &&
     (!mediaProbe.ok || !nextSignature || mediaAgeMs > HOST_MEDIA_STALE_MS);
 
-  if (mediaLooksDead) {
+  const alreadyInGrace =
+    runtime?.hostDisconnectState === "grace" &&
+    runtime?.hostDisconnectGraceExpiresAt;
+
+  if (mediaLooksDead && !alreadyInGrace) {
     const existingGraceExpiresAt =
       runtime?.hostDisconnectGraceExpiresAt ||
       graceResult?.graceExpiresAt ||
