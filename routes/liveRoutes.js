@@ -481,17 +481,22 @@ async function evaluateHostLifecycle({ event, scope }) {
     (!mediaProbe.ok || !nextSignature || mediaAgeMs > HOST_MEDIA_STALE_MS);
 
   if (mediaLooksDead) {
-    const alreadyGrace =
-      String(runtime?.hostDisconnectState || "").toLowerCase() === "grace" &&
-      runtime?.hostDisconnectGraceExpiresAt;
+    const existingGraceExpiresAt =
+      runtime?.hostDisconnectGraceExpiresAt ||
+      graceResult?.graceExpiresAt ||
+      null;
 
-    const graceStartedAt = alreadyGrace
-      ? runtime.hostDisconnectGraceStartedAt || new Date()
+    const existingGraceStartedAt =
+      runtime?.hostDisconnectGraceStartedAt ||
+      null;
+
+    const graceStartedAt = existingGraceStartedAt
+      ? new Date(existingGraceStartedAt)
       : new Date();
 
-    const graceExpiresAt = alreadyGrace
-      ? runtime.hostDisconnectGraceExpiresAt
-      : new Date(new Date(graceStartedAt).getTime() + HOST_DISCONNECT_GRACE_MS);
+    const graceExpiresAt = existingGraceExpiresAt
+      ? new Date(existingGraceExpiresAt)
+      : new Date(graceStartedAt.getTime() + HOST_DISCONNECT_GRACE_MS);
 
     await Event.updateOne(
       { _id: event._id },
