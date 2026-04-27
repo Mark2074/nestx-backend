@@ -548,7 +548,12 @@ async function evaluateHostLifecycle({ event, scope }) {
       currentGraceExpiresAt,
       nextState,
       nextGraceExpiresAt,
-      reason: "ABOUT_TO_WRITE_GRACE",
+      stateChanged,
+      signatureChanged,
+      nextHostMediaStatus,
+      runtimeHostMediaStatus: runtime?.hostMediaStatus,
+      updateSet,
+      reason: "ABOUT_TO_WRITE",
     });
     await Event.updateOne(
       { _id: event._id },
