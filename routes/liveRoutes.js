@@ -36,6 +36,7 @@ const PUBLIC_ROOM_HARD_CAP = 200;
 
 const HOST_STALE_MS = 20 * 1000;
 const HOST_DISCONNECT_GRACE_MS = 2 * 60 * 1000;
+const HOST_MEDIA_STALE_MS = 20 * 1000;
 
 const OME_RTMP_URL = String(process.env.OME_RTMP_URL || "").trim();
 const OME_PLAYBACK_BASE_URL = String(process.env.OME_PLAYBACK_BASE_URL || "").trim().replace(/\/+$/, "");
@@ -68,14 +69,12 @@ function sanitizePlaybackUrl(url, event) {
   return raw;
 }
 
-async function probePlaybackUrl(playbackUrl) {
-  if (!playbackUrl) return false;
-
+async function fetchTextWithTimeout(url, timeoutMs = 3000) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 3000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const res = await fetch(playbackUrl, {
+    const res = await fetch(url, {
       method: "GET",
       signal: controller.signal,
       headers: {
@@ -83,15 +82,98 @@ async function probePlaybackUrl(playbackUrl) {
       },
     });
 
-    if (!res.ok) return false;
-
-    const text = await res.text();
-    return typeof text === "string" && text.includes("#EXTM3U");
+    if (!res.ok) return null;
+    return await res.text();
   } catch {
-    return false;
+    return null;
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function resolveHlsUrl(baseUrl, childUrl) {
+  const raw = String(childUrl || "").trim();
+  if (!raw) return null;
+
+  try {
+    return new URL(raw, baseUrl).toString();
+  } catch {
+    return null;
+  }
+}
+
+function extractFirstVariantUrl(masterText, masterUrl) {
+  const lines = String(masterText || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  for (let i = 0; i < lines.length; i += 1) {
+    if (lines[i].startsWith("#EXT-X-STREAM-INF")) {
+      const next = lines[i + 1];
+      if (next && !next.startsWith("#")) {
+        return resolveHlsUrl(masterUrl, next);
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractHlsSignature(mediaText) {
+  const lines = String(mediaText || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const mediaSequence =
+    lines.find((line) => line.startsWith("#EXT-X-MEDIA-SEQUENCE:")) || "";
+
+  const segments = lines.filter((line) => !line.startsWith("#"));
+  const lastSegment = segments[segments.length - 1] || "";
+
+  if (!mediaSequence && !lastSegment) return null;
+
+  return `${mediaSequence}|${lastSegment}`;
+}
+
+async function probePlaybackUrl(playbackUrl) {
+  if (!playbackUrl) {
+    return {
+      ok: false,
+      signature: null,
+    };
+  }
+
+  const masterText = await fetchTextWithTimeout(playbackUrl, 3000);
+  if (!masterText || !masterText.includes("#EXTM3U")) {
+    return {
+      ok: false,
+      signature: null,
+    };
+  }
+
+  const variantUrl = extractFirstVariantUrl(masterText, playbackUrl);
+
+  if (!variantUrl) {
+    return {
+      ok: true,
+      signature: extractHlsSignature(masterText),
+    };
+  }
+
+  const mediaText = await fetchTextWithTimeout(variantUrl, 3000);
+  if (!mediaText || !mediaText.includes("#EXTM3U")) {
+    return {
+      ok: false,
+      signature: null,
+    };
+  }
+
+  return {
+    ok: true,
+    signature: extractHlsSignature(mediaText),
+  };
 }
 
 function getPrivateSessionCounterForScope(event, scope) {
@@ -312,7 +394,104 @@ async function evaluateHostLifecycle({ event, scope }) {
   }
 
   const runtime = getHostRuntimeForScope(event, scope);
-  const graceResult = await startHostDisconnectGraceIfNeeded({ event, scope });
+  const base = getRuntimeBasePath(scope);
+
+  let graceResult = await startHostDisconnectGraceIfNeeded({ event, scope });
+
+  const playbackUrl = getCanonicalPlaybackUrl(event);
+  const mediaProbe = await probePlaybackUrl(playbackUrl);
+  const now = new Date();
+
+  const previousSignature = String(runtime?.hostMediaSignature || "");
+  const nextSignature = String(mediaProbe.signature || "");
+
+  const previousChangedAt = runtime?.hostMediaSignatureChangedAt
+    ? new Date(runtime.hostMediaSignatureChangedAt).getTime()
+    : 0;
+
+  let mediaIsAdvancing = false;
+  let mediaChangedAt = previousChangedAt ? new Date(previousChangedAt) : now;
+
+  if (mediaProbe.ok && nextSignature && nextSignature !== previousSignature) {
+    mediaIsAdvancing = true;
+    mediaChangedAt = now;
+
+    await Event.updateOne(
+      { _id: event._id },
+      {
+        $set: {
+          [`${base}.hostMediaStatus`]: "live",
+          [`${base}.hostMediaSignature`]: nextSignature,
+          [`${base}.hostMediaSignatureChangedAt`]: now,
+          [`${base}.hostMediaCheckedAt`]: now,
+          [`${base}.playbackUrl`]: playbackUrl || null,
+        },
+      }
+    );
+
+    if (String(runtime?.hostDisconnectState || "").toLowerCase() === "grace") {
+      await Event.updateOne(
+        { _id: event._id },
+        {
+          $set: {
+            [`${base}.hostDisconnectState`]: "online",
+            [`${base}.hostDisconnectGraceStartedAt`]: null,
+            [`${base}.hostDisconnectGraceExpiresAt`]: null,
+            [`${base}.hostMediaStatus`]: "live",
+          },
+        }
+      );
+
+      graceResult = {
+        changed: true,
+        state: "online",
+        graceExpiresAt: null,
+      };
+    }
+  } else {
+    await Event.updateOne(
+      { _id: event._id },
+      {
+        $set: {
+          [`${base}.hostMediaCheckedAt`]: now,
+        },
+      }
+    );
+  }
+
+  const hostRealtimeState = String(runtime?.hostRealtimeState || "idle").toLowerCase();
+  const shouldExpectMedia = ["broadcasting"].includes(hostRealtimeState);
+
+  const mediaAgeMs = previousChangedAt ? Date.now() - previousChangedAt : 0;
+  const mediaLooksDead =
+    shouldExpectMedia &&
+    (!mediaProbe.ok || !nextSignature || mediaAgeMs > HOST_MEDIA_STALE_MS);
+
+  if (
+    mediaLooksDead &&
+    String(runtime?.hostDisconnectState || "").toLowerCase() !== "grace"
+  ) {
+    const graceStartedAt = new Date();
+    const graceExpiresAt = new Date(graceStartedAt.getTime() + HOST_DISCONNECT_GRACE_MS);
+
+    await Event.updateOne(
+      { _id: event._id },
+      {
+        $set: {
+          [`${base}.hostMediaStatus`]: "idle",
+          [`${base}.hostDisconnectState`]: "grace",
+          [`${base}.hostDisconnectGraceStartedAt`]: graceStartedAt,
+          [`${base}.hostDisconnectGraceExpiresAt`]: graceExpiresAt,
+        },
+      }
+    );
+
+    graceResult = {
+      changed: true,
+      state: "grace",
+      graceExpiresAt,
+    };
+  }
 
   const disconnectState =
     graceResult?.state ||
@@ -668,7 +847,8 @@ router.post("/:eventId/viewer/session", auth, featureGuard("live"), async (req, 
     const streamKey = getOmeStreamKey(event);
     const playbackUrl = getCanonicalPlaybackUrl(event);
 
-    const isLive = await probePlaybackUrl(playbackUrl);
+    const mediaProbe = await probePlaybackUrl(playbackUrl);
+    const isLive = mediaProbe.ok;
 
     await Event.updateOne(
       { _id: event._id },
@@ -757,7 +937,8 @@ router.get("/:eventId/media-status", auth, featureGuard("live"), async (req, res
     const streamKey = getOmeStreamKey(event);
     const playbackUrl = getCanonicalPlaybackUrl(event);
 
-    const isLive = await probePlaybackUrl(playbackUrl);
+    const mediaProbe = await probePlaybackUrl(playbackUrl);
+    const isLive = mediaProbe.ok;
 
     await Event.updateOne(
       { _id: event._id },
