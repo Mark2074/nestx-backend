@@ -301,9 +301,17 @@ async function startHostDisconnectGraceIfNeeded({ event, scope }) {
   }
 
   if (now - lastSeenAt < HOST_STALE_MS) {
+    if (disconnectState === "grace" && runtime?.hostDisconnectGraceExpiresAt) {
+      return {
+        changed: false,
+        state: "grace",
+        graceExpiresAt: runtime.hostDisconnectGraceExpiresAt,
+      };
+    }
+
     return {
       changed: false,
-      state: disconnectState === "grace" ? "online" : disconnectState || "online",
+      state: disconnectState || "online",
       graceExpiresAt: runtime?.hostDisconnectGraceExpiresAt || null,
     };
   }
