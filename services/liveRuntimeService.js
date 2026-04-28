@@ -191,37 +191,24 @@ async function markHostRealtimeState({
   const normalizedState = String(state || "idle").trim().toLowerCase();
   const now = new Date();
 
+  const isActive =
+    normalizedState === "joined" || normalizedState === "broadcasting";
+
   await saveHostRuntimeOnEvent({
     eventId,
     scope,
     hostRealtimeState: normalizedState,
-    hostJoinedAt:
-      normalizedState === "setup" || normalizedState === "joined" || normalizedState === "broadcasting"
-        ? (current?.hostJoinedAt || now)
-        : null,
+    hostJoinedAt: isActive ? (current?.hostJoinedAt || now) : null,
     hostBroadcastStartedAt:
       broadcastStarted || normalizedState === "broadcasting"
         ? (current?.hostBroadcastStartedAt || now)
         : current?.hostBroadcastStartedAt || null,
-    hostLastSeenAt:
-      normalizedState === "setup" || normalizedState === "joined" || normalizedState === "broadcasting"
-        ? now
-        : null,
-    hostDisconnectState:
-      normalizedState === "setup" || normalizedState === "joined" || normalizedState === "broadcasting"
-        ? "online"
-        : "offline",
+    hostLastSeenAt: isActive ? now : null,
+    hostDisconnectState: isActive ? "online" : "offline",
     hostDisconnectGraceStartedAt: null,
     hostDisconnectGraceExpiresAt: null,
     autoFinishReason: normalizedState === "ended" ? "HOST_ENDED" : null,
-    hostMediaStatus:
-      normalizedState === "broadcasting"
-        ? "live"
-        : normalizedState === "joined" || normalizedState === "setup"
-        ? "preview"
-        : normalizedState === "ended"
-        ? "ended"
-        : "idle",
+    hostMediaStatus: normalizedState === "broadcasting" ? "live" : "idle",
     playbackUrl: current?.playbackUrl || null,
     streamKey: current?.streamKey || null,
   });
