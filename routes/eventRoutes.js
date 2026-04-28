@@ -1144,6 +1144,91 @@ router.post("/:id/private/schedule", auth, featureGuard("live"), async (req, res
 });
 
 /**
+ * @route   POST /api/events/:id/private/cancel
+ * @desc    Host cancels a scheduled private session before reservation
+ * @access  Private (host/creator)
+ */
+router.post("/:id/private/cancel", auth, featureGuard("live"), async (req, res) => {
+  try {
+    const user = req.user;
+    const { id } = req.params;
+
+    if (!user) {
+      return res.status(401).json({
+        status: "error",
+        message: "Unauthenticated user",
+      });
+    }
+
+    const event = await Event.findById(id);
+    if (!event) {
+      return res.status(404).json({
+        status: "error",
+        message: "Event not found",
+      });
+    }
+
+    if (
+      event.contentScope !== "HOT" ||
+      event.accessScope !== "public"
+    ) {
+      return res.status(400).json({
+        status: "error",
+        code: "PRIVATE_SESSION_NOT_ALLOWED",
+        message: "Internal private sessions allowed only for HOT public events",
+      });
+    }
+
+    if (String(event.creatorId) !== String(user._id)) {
+      return res.status(403).json({
+        status: "error",
+        message: "Only the host can cancel the private session",
+      });
+    }
+
+    if (event.status !== "live") {
+      return res.status(400).json({
+        status: "error",
+        code: "EVENT_NOT_LIVE",
+        message: "Event is not live",
+      });
+    }
+
+    const ps = event.privateSession || null;
+
+    if (!ps || ps.status !== "scheduled") {
+      return res.status(400).json({
+        status: "error",
+        code: "PRIVATE_NOT_SCHEDULED",
+        message: "No scheduled private session to cancel",
+        data: { privateSession: ps },
+      });
+    }
+
+    event.privateSession.status = "cancelled";
+    event.privateSession.isEnabled = false;
+    event.privateSession.cancelledAt = new Date();
+
+    await event.save();
+
+    return res.status(200).json({
+      status: "success",
+      message: "Private session cancelled",
+      data: {
+        eventId: event._id,
+        privateSession: event.privateSession,
+      },
+    });
+  } catch (err) {
+    console.error("Error during private session cancel:", err);
+    return res.status(500).json({
+      status: "error",
+      message: "Internal error while cancelling the private session",
+    });
+  }
+});
+
+/**
  * @route   POST /api/events/:id/private/buy
  * @desc    Buyer buys private slot (reserve) during public live
  * @access  Private
