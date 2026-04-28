@@ -891,16 +891,12 @@ router.post("/:eventId/viewer/session", auth, featureGuard("live"), async (req, 
     const streamKey = getOmeStreamKey(event);
     const playbackUrl = getCanonicalPlaybackUrl(event);
 
-    const mediaProbe = await probePlaybackUrl(playbackUrl);
-    const isLive = mediaProbe.ok;
-
     await Event.updateOne(
       { _id: event._id },
       {
         $set: {
           [`${base}.streamKey`]: streamKey,
           [`${base}.playbackUrl`]: playbackUrl || null,
-          [`${base}.hostMediaStatus`]: isLive ? "live" : "idle",
         },
       }
     );
@@ -914,8 +910,8 @@ router.post("/:eventId/viewer/session", auth, featureGuard("live"), async (req, 
         roomId: getRoomIdForScope(event, effectiveScope, access.authorizedRoomId || null),
         playbackUrl: playbackUrl || null,
         streamKey,
-        isLive,
-        hostMediaStatus: isLive ? "live" : "idle",
+        isLive: true,
+        hostMediaStatus: "live",
       },
     });
   } catch (err) {
@@ -1375,19 +1371,6 @@ router.post("/:eventId/join-room", auth, featureGuard("live"), async (req, res) 
     const effectiveScope = access.authorizedScope;
     const authorizedRoomId = access.authorizedRoomId || null;
 
-    const hostLifecycle = await evaluateHostLifecycle({
-      event,
-      scope: access.authorizedScope,
-    });
-
-    if (hostLifecycle.autoFinished) {
-      return res.status(410).json({
-        status: "error",
-        code: "EVENT_ENDED",
-        message: "Event ended because host disconnected",
-      });
-    }
-
     if (!effectiveScope) {
       return res.status(403).json({
         status: "error",
@@ -1561,9 +1544,6 @@ router.post("/:eventId/join-room", auth, featureGuard("live"), async (req, res) 
         privateSessionCounter,
         viewersTtlMs: PRESENCE_TTL_MS,
         viewersCutoff: cutoff,
-        hostDisconnectState: hostLifecycle.hostDisconnectState,
-        hostGraceActive: hostLifecycle.hostGraceActive,
-        hostGraceExpiresAt: hostLifecycle.hostGraceExpiresAt,
         role: isHost ? "host" : "viewer",
         isHost: false
       },
@@ -1735,19 +1715,6 @@ router.get("/:eventId/status", auth, featureGuard("live"), async (req, res) => {
     const effectiveScope = access.authorizedScope;
     const privateSessionCounter = getPrivateSessionCounterForScope(event, effectiveScope);
 
-    const hostLifecycle = await evaluateHostLifecycle({
-      event,
-      scope: effectiveScope,
-    });
-
-    if (hostLifecycle.autoFinished) {
-      return res.status(410).json({
-        status: "error",
-        code: "EVENT_ENDED",
-        message: "Event ended because host disconnected",
-      });
-    }
-
     if (!effectiveScope) {
       return res.status(403).json({
         status: "error",
@@ -1808,9 +1775,9 @@ router.get("/:eventId/status", auth, featureGuard("live"), async (req, res) => {
         viewersCutoff: cutoff,
         privateSessionCounter,
         viewersTtlMs: PRESENCE_TTL_MS,
-        hostDisconnectState: hostLifecycle.hostDisconnectState,
-        hostGraceActive: hostLifecycle.hostGraceActive,
-        hostGraceExpiresAt: hostLifecycle.hostGraceExpiresAt,
+        hostDisconnectState: "online",
+        hostGraceActive: false,
+        hostGraceExpiresAt: null,
 
         live: event.live
           ? {
@@ -1901,19 +1868,6 @@ router.post("/:eventId/ping", auth, featureGuard("live"), async (req, res) => {
     const authorizedRoomId = access.authorizedRoomId || null;
     const privateSessionCounter = getPrivateSessionCounterForScope(event, effectiveScope);
     const roomId = getRoomIdForScope(event, effectiveScope, authorizedRoomId);
-
-    const hostLifecycle = await evaluateHostLifecycle({
-      event,
-      scope: effectiveScope,
-    });
-
-    if (hostLifecycle.autoFinished) {
-      return res.status(410).json({
-        status: "error",
-        code: "EVENT_ENDED",
-        message: "Event ended because host disconnected",
-      });
-    }
 
     const now = new Date();
 
@@ -2020,9 +1974,9 @@ router.post("/:eventId/ping", auth, featureGuard("live"), async (req, res) => {
         privateSessionCounter,
         currentViewersCount: Number(viewersNow || 0),
         viewersTtlMs: PRESENCE_TTL_MS,
-        hostDisconnectState: hostLifecycle.hostDisconnectState,
-        hostGraceActive: hostLifecycle.hostGraceActive,
-        hostGraceExpiresAt: hostLifecycle.hostGraceExpiresAt,
+        hostDisconnectState: "online",
+        hostGraceActive: false,
+        hostGraceExpiresAt: null,
       },
     });
   } catch (err) {
