@@ -320,6 +320,10 @@ const EventSchema = new mongoose.Schema(
         type: Date,
         default: null,
       },
+      hostLastSeenAt: {
+        type: Date,
+        default: null,
+      },
       hostLastTokenIssuedAt: {
         type: Date,
         default: null,

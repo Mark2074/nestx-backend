@@ -401,7 +401,6 @@ async function evaluateHostLifecycle({ event, scope }) {
     };
   }
 
-  const base = getRuntimeBasePath(scope);
   const freshEvent = await Event.findById(event._id)
     .select("_id status live privateSession privateSessionCounter")
     .lean()
@@ -409,65 +408,72 @@ async function evaluateHostLifecycle({ event, scope }) {
 
   const effectiveEvent = freshEvent || event;
   const runtime = getHostRuntimeForScope(effectiveEvent, scope);
+  const base = getRuntimeBasePath(scope);
 
-  const playbackUrl = getCanonicalPlaybackUrl(event);
-  const mediaProbe = await probePlaybackUrl(playbackUrl);
   const now = new Date();
-
-  const currentState = String(runtime?.hostDisconnectState || "offline")
-    .trim()
-    .toLowerCase();
-
-  const currentGraceStartedAt = runtime?.hostDisconnectGraceStartedAt || null;
-  const currentGraceExpiresAt = runtime?.hostDisconnectGraceExpiresAt || null;
-
-  const currentSignature = String(runtime?.hostMediaSignature || "");
-  const nextSignature = String(mediaProbe?.signature || "");
-
-  const previousChangedAtMs = runtime?.hostMediaSignatureChangedAt
-    ? new Date(runtime.hostMediaSignatureChangedAt).getTime()
-    : 0;
-
-  const signatureChanged =
-    mediaProbe.ok &&
-    nextSignature &&
-    nextSignature !== currentSignature;
-
-  const effectiveChangedAtMs = signatureChanged
-    ? now.getTime()
-    : previousChangedAtMs;
-
-  const mediaAgeMs = effectiveChangedAtMs
-    ? Date.now() - effectiveChangedAtMs
-    : Number.MAX_SAFE_INTEGER;
+  const nowMs = now.getTime();
 
   const hostRealtimeState = String(runtime?.hostRealtimeState || "idle")
     .trim()
     .toLowerCase();
 
-  const hasBroadcastStarted =
-    !!runtime?.hostBroadcastStartedAt ||
-    String(effectiveEvent?.status || "").toLowerCase() === "live";
+  const currentState = String(runtime?.hostDisconnectState || "offline")
+    .trim()
+    .toLowerCase();
 
-  const shouldExpectMedia =
-    hasBroadcastStarted &&
-    ["joined", "broadcasting"].includes(hostRealtimeState);
+  const lastSeenAtMs = runtime?.hostLastSeenAt
+    ? new Date(runtime.hostLastSeenAt).getTime()
+    : 0;
 
-  const mediaLooksLive =
-    mediaProbe.ok &&
-    nextSignature &&
-    (signatureChanged || mediaAgeMs <= HOST_MEDIA_STALE_MS);
+  const consoleOnline =
+    !!lastSeenAtMs && nowMs - lastSeenAtMs < HOST_STALE_MS;
 
-  const mediaLooksDead =
-    shouldExpectMedia &&
-    !mediaLooksLive;
+  const playbackUrl = getCanonicalPlaybackUrl(effectiveEvent);
+  const mediaProbe = await probePlaybackUrl(playbackUrl);
 
-  if (
-    currentState === "grace" &&
-    currentGraceExpiresAt &&
-    new Date(currentGraceExpiresAt).getTime() <= Date.now() &&
-    mediaLooksDead
-  ) {
+  const mediaLive = Boolean(mediaProbe?.ok);
+
+  const graceExpiresAt = runtime?.hostDisconnectGraceExpiresAt || null;
+  const graceExpiresAtMs = graceExpiresAt ? new Date(graceExpiresAt).getTime() : 0;
+
+  const shouldWatchHost =
+    String(effectiveEvent?.status || "") === "live" &&
+    ["setup", "joined", "broadcasting"].includes(hostRealtimeState);
+
+  if (!shouldWatchHost) {
+    return {
+      hostDisconnectState: currentState || "offline",
+      hostGraceActive: false,
+      hostGraceExpiresAt: null,
+      autoFinished: false,
+    };
+  }
+
+  if (consoleOnline && mediaLive) {
+    if (currentState !== "online" || runtime?.hostDisconnectGraceExpiresAt) {
+      await Event.updateOne(
+        { _id: effectiveEvent._id },
+        {
+          $set: {
+            [`${base}.hostDisconnectState`]: "online",
+            [`${base}.hostDisconnectGraceStartedAt`]: null,
+            [`${base}.hostDisconnectGraceExpiresAt`]: null,
+            [`${base}.hostMediaStatus`]: "live",
+            [`${base}.hostMediaCheckedAt`]: now,
+          },
+        }
+      );
+    }
+
+    return {
+      hostDisconnectState: "online",
+      hostGraceActive: false,
+      hostGraceExpiresAt: null,
+      autoFinished: false,
+    };
+  }
+
+  if (currentState === "grace" && graceExpiresAtMs && graceExpiresAtMs <= nowMs) {
     await autoFinishEventForHostTimeout({ event: effectiveEvent, scope });
 
     return {
@@ -478,93 +484,45 @@ async function evaluateHostLifecycle({ event, scope }) {
     };
   }
 
-  let nextState = currentState || "offline";
-  let nextGraceStartedAt = currentGraceStartedAt;
-  let nextGraceExpiresAt = currentGraceExpiresAt;
-  let nextHostMediaStatus = runtime?.hostMediaStatus || "idle";
-
-  if (mediaLooksLive) {
-    nextState = "online";
-    nextGraceStartedAt = null;
-    nextGraceExpiresAt = null;
-    nextHostMediaStatus = "live";
-  } else if (mediaLooksDead) {
-    if (currentState !== "grace" || !currentGraceExpiresAt) {
-      nextState = "grace";
-      nextGraceStartedAt = now;
-      nextGraceExpiresAt = new Date(now.getTime() + HOST_DISCONNECT_GRACE_MS);
-    } else {
-      nextState = "grace";
-      nextGraceStartedAt = currentGraceStartedAt;
-      nextGraceExpiresAt = currentGraceExpiresAt;
-    }
-
-    nextHostMediaStatus = "idle";
-  }
-
-  const updateSet = {
-    [`${base}.hostMediaCheckedAt`]: now,
-  };
-
-  let mustUpdate = false;
-
-  if (signatureChanged) {
-    updateSet[`${base}.hostMediaSignature`] = nextSignature;
-    updateSet[`${base}.hostMediaSignatureChangedAt`] = now;
-    updateSet[`${base}.playbackUrl`] = playbackUrl || null;
-    mustUpdate = true;
-  }
-
-  if (String(runtime?.hostMediaStatus || "idle") !== String(nextHostMediaStatus)) {
-    updateSet[`${base}.hostMediaStatus`] = nextHostMediaStatus;
-    mustUpdate = true;
-  }
-
-  const currentExpiresStr = currentGraceExpiresAt
-    ? new Date(currentGraceExpiresAt).toISOString()
-    : "";
-
-  const nextExpiresStr = nextGraceExpiresAt
-    ? new Date(nextGraceExpiresAt).toISOString()
-    : "";
-
-  const stateChanged =
-    currentState !== nextState ||
-    currentExpiresStr !== nextExpiresStr;
-
-  if (stateChanged) {
-    updateSet[`${base}.hostDisconnectState`] = nextState;
-    updateSet[`${base}.hostDisconnectGraceStartedAt`] = nextGraceStartedAt;
-    updateSet[`${base}.hostDisconnectGraceExpiresAt`] = nextGraceExpiresAt;
-    mustUpdate = true;
-  }
-
-  if (mustUpdate) {
-    console.log("GRACE_WRITE_DEBUG", {
-      eventId: String(event?._id || ""),
-      scope,
-      at: new Date().toISOString(),
-      currentState,
-      currentGraceExpiresAt,
-      nextState,
-      nextGraceExpiresAt,
-      stateChanged,
-      signatureChanged,
-      nextHostMediaStatus,
-      runtimeHostMediaStatus: runtime?.hostMediaStatus,
-      updateSet,
-      reason: "ABOUT_TO_WRITE",
-    });
+  if (currentState === "grace" && graceExpiresAt) {
     await Event.updateOne(
-      { _id: event._id },
-      { $set: updateSet }
+      { _id: effectiveEvent._id },
+      {
+        $set: {
+          [`${base}.hostMediaStatus`]: mediaLive ? "live" : "idle",
+          [`${base}.hostMediaCheckedAt`]: now,
+        },
+      }
     );
+
+    return {
+      hostDisconnectState: "grace",
+      hostGraceActive: true,
+      hostGraceExpiresAt: graceExpiresAt,
+      autoFinished: false,
+    };
   }
+
+  const graceStartedAt = now;
+  const nextGraceExpiresAt = new Date(nowMs + HOST_DISCONNECT_GRACE_MS);
+
+  await Event.updateOne(
+    { _id: effectiveEvent._id },
+    {
+      $set: {
+        [`${base}.hostDisconnectState`]: "grace",
+        [`${base}.hostDisconnectGraceStartedAt`]: graceStartedAt,
+        [`${base}.hostDisconnectGraceExpiresAt`]: nextGraceExpiresAt,
+        [`${base}.hostMediaStatus`]: mediaLive ? "live" : "idle",
+        [`${base}.hostMediaCheckedAt`]: now,
+      },
+    }
+  );
 
   return {
-    hostDisconnectState: nextState,
-    hostGraceActive: nextState === "grace",
-    hostGraceExpiresAt: nextState === "grace" ? nextGraceExpiresAt : null,
+    hostDisconnectState: "grace",
+    hostGraceActive: true,
+    hostGraceExpiresAt: nextGraceExpiresAt,
     autoFinished: false,
   };
 }
@@ -1270,6 +1228,12 @@ router.post("/:eventId/host-ping", auth, featureGuard("live"), async (req, res) 
     }
 
     const scope = getScopeFromReq(req);
+    console.log("HOST_PING_HIT", {
+      eventId,
+      scope,
+      userId: String(req.user?._id || ""),
+      at: new Date().toISOString(),
+    });
 
     const event = await Event.findById(eventId)
       .select("_id creatorId status")
@@ -1296,12 +1260,34 @@ router.post("/:eventId/host-ping", auth, featureGuard("live"), async (req, res) 
       scope,
     });
 
+    const base = getRuntimeBasePath(scope);
+    const now = new Date();
+
+    await Event.updateOne(
+      { _id: event._id },
+      {
+        $set: {
+          [`${base}.hostLastSeenAt`]: now,
+        },
+      }
+    );
+
+    console.log("HOST_PING_WRITE", {
+      eventId,
+      scope,
+      base,
+      at: now.toISOString(),
+    });
+
     return res.status(200).json({
       status: "success",
       data: {
         eventId,
         scope,
         heartbeatAt,
+        hostDisconnectState: "online",
+        hostGraceActive: false,
+        hostGraceExpiresAt: null,
       },
     });
   } catch (err) {
@@ -1755,6 +1741,11 @@ router.get("/:eventId/status", auth, featureGuard("live"), async (req, res) => {
 
     await syncEventViewerCountFromTruth(event._id, Number(viewersNow || 0));
 
+    const hostLifecycle = await evaluateHostLifecycle({
+      event,
+      scope: effectiveScope,
+    });
+
     const ps = event.privateSession || null;
     
     return res.status(200).json({
@@ -1775,9 +1766,9 @@ router.get("/:eventId/status", auth, featureGuard("live"), async (req, res) => {
         viewersCutoff: cutoff,
         privateSessionCounter,
         viewersTtlMs: PRESENCE_TTL_MS,
-        hostDisconnectState: "online",
-        hostGraceActive: false,
-        hostGraceExpiresAt: null,
+        hostDisconnectState: hostLifecycle.hostDisconnectState,
+        hostGraceActive: hostLifecycle.hostGraceActive,
+        hostGraceExpiresAt: hostLifecycle.hostGraceExpiresAt,
 
         live: event.live
           ? {
@@ -1960,6 +1951,24 @@ router.post("/:eventId/ping", auth, featureGuard("live"), async (req, res) => {
     );
 
     await syncEventViewerCountFromTruth(event._id, Number(viewersNow || 0));
+    let hostLifecycle = {
+      hostDisconnectState: "online",
+      hostGraceActive: false,
+      hostGraceExpiresAt: null,
+    };
+
+    if (isHost) {
+      hostLifecycle = {
+        hostDisconnectState: "online",
+        hostGraceActive: false,
+        hostGraceExpiresAt: null,
+      };
+    } else {
+      hostLifecycle = await evaluateHostLifecycle({
+        event,
+        scope: effectiveScope,
+      });
+    }
 
     return res.status(200).json({
       status: "success",
@@ -1974,9 +1983,9 @@ router.post("/:eventId/ping", auth, featureGuard("live"), async (req, res) => {
         privateSessionCounter,
         currentViewersCount: Number(viewersNow || 0),
         viewersTtlMs: PRESENCE_TTL_MS,
-        hostDisconnectState: "online",
-        hostGraceActive: false,
-        hostGraceExpiresAt: null,
+        hostDisconnectState: hostLifecycle.hostDisconnectState,
+        hostGraceActive: hostLifecycle.hostGraceActive,
+        hostGraceExpiresAt: hostLifecycle.hostGraceExpiresAt,
       },
     });
   } catch (err) {

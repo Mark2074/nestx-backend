@@ -131,9 +131,6 @@ async function markHostHeartbeat({
     {
       $set: {
         [`${base}.hostLastSeenAt`]: now,
-        [`${base}.hostDisconnectState`]: "online",
-        [`${base}.hostDisconnectGraceStartedAt`]: null,
-        [`${base}.hostDisconnectGraceExpiresAt`]: null,
       },
     }
   );
