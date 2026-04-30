@@ -36,8 +36,9 @@ router.get("/event-banner/:userId", auth, async (req, res) => {
     }
 
     const isOwner = meId && meId === String(targetUser._id);
+    const isAdmin = String(req.user?.accountType || "").toLowerCase() === "admin";
 
-    if (targetUser.isPrivate === true && !isOwner) {
+    if (targetUser.isPrivate === true && !isOwner && !isAdmin) {
       const canSee = await Follow.findOne({
         followerId: req.user._id,
         followingId: targetUser._id,
