@@ -319,8 +319,9 @@ router.post('/campaign', auth, ensureCreator, async (req, res) => {
     const opId = `adv_${creatorId}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 
     const startOfDay = getStartOfDay();
-    const totalCountToday = await Adv.countDocuments({
+    const freeAdvUsed = await Adv.countDocuments({
       creatorId,
+      billingType: "free",
       createdAt: { $gte: startOfDay },
     });
 
@@ -328,7 +329,7 @@ router.post('/campaign', auth, ensureCreator, async (req, res) => {
     let paidTokens = 0;
     let chargedGroupId = null;
 
-    if (totalCountToday >= ADV_FREE_PER_DAY) {
+    if (freeAdvUsed >= ADV_FREE_PER_DAY) {
       billingType = "paid";
       paidTokens = ADV_PAID_PRICE_TOKENS;
 
@@ -470,6 +471,11 @@ router.post('/campaign', auth, ensureCreator, async (req, res) => {
         return res.status(201).json({
           status: 'success',
           data: createdAdv,
+          advQuota: {
+            freeAdvUsed,
+            freeAdvLimit: ADV_FREE_PER_DAY,
+            freeAdvRemaining: Math.max(0, ADV_FREE_PER_DAY - freeAdvUsed),
+          },
         });
       } catch (err) {
         console.error("[ADV] error", {
@@ -521,6 +527,11 @@ router.post('/campaign', auth, ensureCreator, async (req, res) => {
     return res.status(201).json({
       status: 'success',
       data: adv,
+      advQuota: {
+        freeAdvUsed: freeAdvUsed + 1,
+        freeAdvLimit: ADV_FREE_PER_DAY,
+        freeAdvRemaining: Math.max(0, ADV_FREE_PER_DAY - (freeAdvUsed + 1)),
+      },
     });
   } catch (err) {
     console.error('Errore creazione ADV:', err);
