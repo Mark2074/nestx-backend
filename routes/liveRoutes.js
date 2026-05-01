@@ -34,6 +34,16 @@ function getScopeFromReq(req) {
 const PRESENCE_TTL_MS = 40 * 1000;
 const PUBLIC_ROOM_HARD_CAP = 200;
 
+function parseBool(v) {
+  if (v === true) return true;
+  const s = String(v ?? "").trim().toLowerCase();
+  return s === "true" || s === "1" || s === "yes" || s === "on";
+}
+
+function isEconomyEnabled() {
+  return parseBool(process.env.ECONOMY_ENABLED);
+}
+
 const HOST_STALE_MS = 20 * 1000;
 const HOST_DISCONNECT_GRACE_MS = 2 * 60 * 1000;
 const HOST_MEDIA_STALE_MS = 20 * 1000;
@@ -556,8 +566,25 @@ function getLiveChatPermissions({ event, user, dbUser, effectiveScope }) {
 
   const chatEnabledForViewers = getEventChatEnabledForViewers(event);
 
+  // Economy OFF = live chat open to everyone.
+  // Keep only hard safety/admin controls active.
+  if (!isEconomyEnabled()) {
+    if (!chatEnabledForViewers) {
+      return { canChat: false, reason: "CHAT_DISABLED" };
+    }
+
+    if (isMuted) {
+      return { canChat: false, reason: "MUTED" };
+    }
+
+    return { canChat: true, reason: "ECONOMY_OFF" };
+  }
+
   const isVip = dbUser?.isVip === true;
+
   const tokenBalance = Number(dbUser?.tokenBalance || 0);
+  const tokenHeld = Number(dbUser?.tokenHeld || 0);
+  const availableTokens = Math.max(0, tokenBalance - tokenHeld);
 
   const isPaidEvent =
     Number(event?.ticketPriceTokens || 0) > 0 ||
@@ -583,7 +610,7 @@ function getLiveChatPermissions({ event, user, dbUser, effectiveScope }) {
     return { canChat: true, reason: "ALLOWED" };
   }
 
-  if (isVip || tokenBalance > 0) {
+  if (isVip || availableTokens > 0) {
     return { canChat: true, reason: "ALLOWED" };
   }
 
@@ -2185,7 +2212,7 @@ router.post("/:eventId/messages", auth, featureGuard("live"), async (req, res) =
     }
 
     const dbUser = await User.findById(user._id)
-      .select("displayName isVip tokenBalance accountType")
+      .select("displayName isVip tokenBalance tokenHeld accountType")
       .lean()
       .exec();
 
