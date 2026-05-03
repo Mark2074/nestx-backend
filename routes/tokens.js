@@ -655,56 +655,6 @@ router.post("/transfer", auth, featureGuard("tokens"), async (req, res) => {
       );
       mark("credit_tx_created");
 
-      // 3.5) TIP live -> update Event tip total + goal progress (same TX)
-      if (safeContext === "tip") {
-
-        const now = new Date();
-
-        mark("before_event_tip_update");
-        const ev = await Event.findById(String(eventId)).session(session);
-        mark("event_loaded_for_tip");
-
-        if (!ev) {
-          const err = new Error("Event not found");
-          err.statusCode = 404;
-          throw err;
-        }
-
-        if (String(ev.status) !== "live") {
-          const err = new Error("Event is not live");
-          err.statusCode = 400;
-          throw err;
-        }
-
-        // tip must target host of this event
-        if (String(ev.creatorId) !== String(toUserId)) {
-          const err = new Error("Tip target mismatch");
-          err.statusCode = 400;
-          throw err;
-        }
-
-        // 🔹 TIP TOTAL ROOT
-        ev.tipTotalTokens = Number(ev.tipTotalTokens || 0) + amt;
-
-        // 🔹 GOAL ROOT
-        const g = ev.goal || {};
-        if (g.isActive === true) {
-          g.progressTokens = Number(g.progressTokens || 0) + amt;
-
-          const target = Number(g.targetTokens || 0);
-          if (g.reachedAt == null && target > 0 && g.progressTokens >= target) {
-            g.progressTokens = target; // clamp
-            g.reachedAt = now;
-          }
-
-          g.updatedAt = now;
-          ev.goal = g;
-        }
-        
-        await ev.save({ session });
-        mark("event_tip_saved");
-      }
-
       // 4) carico fromUser/toUser per risposta minima dentro TX
       [fromUser, toUser] = await Promise.all([
         User.findById(fromUserId)
@@ -716,6 +666,41 @@ router.post("/transfer", auth, featureGuard("tokens"), async (req, res) => {
       ]);
     });
     mark("after_tx");
+
+    if (safeContext === "tip") {
+      setImmediate(async () => {
+        try {
+          const now = new Date();
+
+          const ev = await Event.findById(String(eventId));
+          if (!ev) return;
+
+          if (String(ev.status) !== "live") return;
+          if (String(ev.creatorId) !== String(toUserId)) return;
+
+          ev.tipTotalTokens = Number(ev.tipTotalTokens || 0) + amt;
+
+          const g = ev.goal || {};
+          if (g.isActive === true) {
+            g.progressTokens = Number(g.progressTokens || 0) + amt;
+
+            const target = Number(g.targetTokens || 0);
+            if (g.reachedAt == null && target > 0 && g.progressTokens >= target) {
+              g.progressTokens = target;
+              g.reachedAt = now;
+            }
+
+            g.updatedAt = now;
+            ev.goal = g;
+          }
+
+          await ev.save();
+
+        } catch (e) {
+          console.error("TIP_EVENT_UPDATE_FAILED", e?.message || e);
+        }
+      });
+    }
 
     // NOTIFICATION + AUDIT best-effort fuori TX: non devono rallentare il pagamento live
     setImmediate(async () => {
