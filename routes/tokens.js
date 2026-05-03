@@ -235,6 +235,37 @@ router.post("/topup", auth, featureGuard("tokens", { allowAdmin: true }), async 
   }
 });
 
+function isRetryableMongoTxError(err) {
+  const msg = String(err?.message || "");
+  return (
+    err?.code === 112 ||
+    err?.retryableTokenWriteConflict === true ||
+    err?.errorLabels?.includes?.("TransientTransactionError") ||
+    msg.includes("Write conflict") ||
+    msg.includes("TransientTransactionError")
+  );
+}
+
+async function runTokenTransferTxWithRetry(session, fn, maxAttempts = 3) {
+  let lastErr = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await session.withTransaction(fn);
+    } catch (err) {
+      lastErr = err;
+
+      if (!isRetryableMongoTxError(err) || attempt >= maxAttempts) {
+        throw err;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 80 * attempt));
+    }
+  }
+
+  throw lastErr;
+}
+
 // --- POST /tokens/transfer ---
 // Trasferisce token da utente loggato a un altro utente
 // Body: { toUserId: string, amountTokens: number, context?: "tip" | "donation" | "cam" | "content" }
@@ -448,7 +479,7 @@ router.post("/transfer", auth, featureGuard("tokens"), async (req, res) => {
     let txCredit = null;
     let goesToEarnings = false;
 
-    await session.withTransaction(async () => {
+    await runTokenTransferTxWithRetry(session, async () => {
       // 0) idempotenza: se abbiamo già registrato il DEBIT per questo op, ritorno idempotente
       const existingDebit = await TokenTransaction.findOne({
         opId,
@@ -486,6 +517,11 @@ router.post("/transfer", auth, featureGuard("tokens"), async (req, res) => {
       });
 
       if (!debit.ok) {
+        if (debit.code === "TOKEN_WRITE_CONFLICT") {
+          const err = new Error("TOKEN_WRITE_CONFLICT");
+          err.retryableTokenWriteConflict = true;
+          throw err;
+        }
         logTokenFlow("ERROR", {
           route: "POST /tokens/transfer",
           fromUserId: String(fromUserId),
