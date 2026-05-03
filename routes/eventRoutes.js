@@ -1254,7 +1254,7 @@ router.post("/:id/private/buy", auth, featureGuard("live"), async (req, res) => 
         buyerId: String(user?._id || ""),
       });
     };
-    
+
     const WAIT_SECONDS = 120;
 
     logPrivateFlow("START", {
@@ -1495,6 +1495,42 @@ router.post("/:id/private/buy", auth, featureGuard("live"), async (req, res) => 
         throw e;
       }
 
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() + WAIT_SECONDS * 1000);
+
+      const reserveUpdate = await Event.updateOne(
+        {
+          _id: event._id,
+          "privateSession.roomId": ps.roomId,
+          "privateSession.status": { $nin: ["reserved", "running"] },
+        },
+        {
+          $set: {
+            "privateSession.status": "reserved",
+            "privateSession.seats": 1,
+            "privateSession.reservedByUserId": user._id,
+            "privateSession.reservedAt": now,
+            "privateSession.reservedExpiresAt": expiresAt,
+            "privateSession.countdownSeconds": WAIT_SECONDS,
+            "privateSession.reservedPriceTokens": priceTokens,
+            "privateSession.reservedDescription": String(ps.description || ""),
+          },
+        },
+        { session }
+      );
+      mark("event_reserved");
+
+      if (reserveUpdate.modifiedCount !== 1) {
+        const e = new Error("PRIVATE_ALREADY_RESERVED");
+        e.httpStatus = 409;
+        e.payload = {
+          status: "error",
+          code: "PRIVATE_ALREADY_RESERVED",
+          message: "Private session already reserved",
+        };
+        throw e;
+      }
+
       mark("before_payment");
       const payment = await chargeUserToCreator({
         buyerId: user._id,
@@ -1547,42 +1583,6 @@ router.post("/:id/private/buy", auth, featureGuard("live"), async (req, res) => 
       mark("ticket_created");
 
       const ticket = createdTickets?.[0] || null;
-
-      const now = new Date();
-      const expiresAt = new Date(now.getTime() + WAIT_SECONDS * 1000);
-
-      const reserveUpdate = await Event.updateOne(
-        {
-          _id: event._id,
-          "privateSession.roomId": ps.roomId,
-          "privateSession.status": { $nin: ["reserved", "running"] },
-        },
-        {
-          $set: {
-            "privateSession.status": "reserved",
-            "privateSession.seats": 1,
-            "privateSession.reservedByUserId": user._id,
-            "privateSession.reservedAt": now,
-            "privateSession.reservedExpiresAt": expiresAt,
-            "privateSession.countdownSeconds": WAIT_SECONDS,
-            "privateSession.reservedPriceTokens": priceTokens,
-            "privateSession.reservedDescription": String(ps.description || ""),
-          },
-        },
-        { session }
-      );
-      mark("event_reserved");
-
-      if (reserveUpdate.modifiedCount !== 1) {
-        const e = new Error("PRIVATE_ALREADY_RESERVED");
-        e.httpStatus = 409;
-        e.payload = {
-          status: "error",
-          code: "PRIVATE_ALREADY_RESERVED",
-          message: "Private session already reserved",
-        };
-        throw e;
-      }
 
       logPrivateFlow("SUCCESS", {
         route: "POST /api/events/:id/private/buy",
