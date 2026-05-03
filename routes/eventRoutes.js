@@ -4010,147 +4010,67 @@ router.post("/:id/ticket", auth, featureGuard("live"), async (req, res) => {
           return;
         }
 
-        // (D) Addebito token
-        debit = await debitUserTokensBuckets({
-          userId: user._id,
+        const creatorBucket = shouldHoldNativePrivateFunds
+          ? "held"
+          : "redeemable";
+
+        const metadata = {
+          privateFundsStatus: shouldHoldNativePrivateFunds ? "held" : undefined,
+        };
+
+        if (shouldHoldNativePrivateFunds) {
+          await Event.updateOne(
+            { _id: event._id },
+            {
+              $set: {
+                "privateSession.economicStatus": "held",
+                "privateSession.economicHeldAt": new Date(),
+                "privateSession.economicReleasedAt": null,
+                "privateSession.economicFrozenAt": null,
+                "privateSession.economicRefundedAt": null,
+                "privateSession.economicResolutionReason": "NATIVE_PRIVATE_TICKET_PURCHASED",
+              },
+              $inc: {
+                "privateSession.economicHeldTokens": priceTokens,
+              },
+            },
+            { session }
+          );
+        }
+
+        const payment = await chargeUserToCreator({
+          buyerId: user._id,
+          creatorId: event.creatorId,
           amountTokens: priceTokens,
+          kind: "ticket_purchase",
+          context: "ticket",
+          contextId: String(event._id),
+          eventId: event._id,
+          scope,
+          roomId: roomId || null,
+          creatorBucket,
+          metadata,
           session,
+          opId,
+          groupId,
         });
 
-        if (!debit.ok) {
-          logTicketFlow("ERROR", {
-            route: "POST /api/events/:id/ticket",
-            eventId: String(event._id || ""),
-            buyerId: String(user?._id || ""),
-            creatorId: String(event.creatorId || ""),
-            code: debit.code || "INSUFFICIENT_TOKENS",
-            scope,
-            roomId: roomId || null,
-            priceTokens: Number(priceTokens || 0),
-            opId,
-          });
-
-          const err = new Error("Insufficient tokens");
-          err.httpStatus = 400;
+        if (!payment.ok) {
+          const err = new Error(payment.code || "TICKET_PAYMENT_FAILED");
+          err.httpStatus = payment.code === "INSUFFICIENT_TOKENS" ? 400 : 409;
           err.payload = {
             status: "error",
-            code: debit.code,
-            message: "Insufficient tokens",
+            code: payment.code || "TICKET_PAYMENT_FAILED",
+            message:
+              payment.code === "INSUFFICIENT_TOKENS"
+                ? "Insufficient tokens"
+                : "Ticket payment could not be completed",
             data: { scope, priceTokens },
           };
           throw err;
         }
 
-        // (E) Credit to creator
-        const creator = await User.findById(event.creatorId)
-          .select("_id accountType isCreator creatorEnabled creatorVerification tokenBalance tokenEarnings tokenRedeemable tokenHeld isVip")
-          .session(session);
-
-        if (!creator) {
-          logTicketFlow("ERROR", {
-            route: "POST /api/events/:id/ticket",
-            eventId: String(event._id || ""),
-            buyerId: String(user?._id || ""),
-            creatorId: String(event.creatorId || ""),
-            code: "CREATOR_NOT_FOUND",
-            scope,
-            roomId: roomId || null,
-            priceTokens: Number(priceTokens || 0),
-            opId,
-          });
-
-          const err = new Error("Creator not found");
-          err.httpStatus = 404;
-          err.payload = { status: "error", message: "Creator not found" };
-          throw err;
-        }
-
-        const isCreatorVerified =
-          (creator.accountType === "creator" || creator.isCreator === true) &&
-          creator.creatorEnabled === true &&
-          creator.creatorVerification?.status === "approved";
-
-        let goesToEarnings = false;
-        let creatorBucket = "redeemable";
-        let releaseTargetBucket = isCreatorVerified ? "redeemable" : "earnings";
-
-        if (shouldHoldNativePrivateFunds) {
-          await User.updateOne(
-            { _id: event.creatorId },
-            { $inc: { tokenBalance: priceTokens, tokenHeld: priceTokens } },
-            { session }
-          );
-
-          creatorBucket = "held";
-          goesToEarnings = false;
-          releaseTargetBucket = isCreatorVerified ? "redeemable" : "earnings";
-        } else {
-          const inc = { tokenBalance: priceTokens };
-          if (isCreatorVerified) {
-            inc.tokenRedeemable = priceTokens;
-            creatorBucket = "redeemable";
-            goesToEarnings = false;
-          } else {
-            inc.tokenEarnings = priceTokens;
-            creatorBucket = "earnings";
-            goesToEarnings = true;
-          }
-
-          await User.updateOne({ _id: event.creatorId }, { $inc: inc }, { session });
-        }
-
-        // (F) Ledger atomico
-        await TokenTransaction.insertMany(
-          [
-            {
-              opId,
-              groupId,
-              fromUserId: user._id,
-              toUserId: event.creatorId,
-              kind: "ticket_purchase",
-              direction: "debit",
-              context: "ticket",
-              contextId: String(event._id),
-              amountTokens: priceTokens,
-              amountEuro: 0,
-              eventId: event._id,
-              scope,
-              roomId: roomId || null,
-              metadata: {
-                goesToEarnings,
-                buyerBuckets: {
-                  earnings: debit.usedFromEarnings,
-                  redeemable: debit.usedFromRedeemable,
-                },
-                creatorBucket,
-                releaseTargetBucket,
-                privateFundsStatus: creatorBucket === "held" ? "held" : undefined,
-              },
-            },
-            {
-              opId,
-              groupId,
-              fromUserId: user._id,
-              toUserId: event.creatorId,
-              kind: "ticket_purchase",
-              direction: "credit",
-              context: "ticket",
-              contextId: String(event._id),
-              amountTokens: priceTokens,
-              amountEuro: 0,
-              eventId: event._id,
-              scope,
-              roomId: roomId || null,
-              metadata: {
-                goesToEarnings,
-                creatorBucket,
-                releaseTargetBucket,
-                privateFundsStatus: creatorBucket === "held" ? "held" : undefined,
-              },
-            },
-          ],
-          { session, ordered: true }
-        );
+        debit = payment;
 
         // (G) Creazione ticket
         const ticket = new Ticket({
@@ -4174,25 +4094,6 @@ router.post("/:id/ticket", auth, featureGuard("live"), async (req, res) => {
 
         savedTicket = await ticket.save({ session });
         purchaseMode = "new_purchase";
-        if (shouldHoldNativePrivateFunds) {
-          await Event.updateOne(
-            { _id: event._id },
-            {
-              $set: {
-                "privateSession.economicStatus": "held",
-                "privateSession.economicHeldAt": new Date(),
-                "privateSession.economicReleasedAt": null,
-                "privateSession.economicFrozenAt": null,
-                "privateSession.economicRefundedAt": null,
-                "privateSession.economicResolutionReason": "NATIVE_PRIVATE_TICKET_PURCHASED",
-              },
-              $inc: {
-                "privateSession.economicHeldTokens": priceTokens,
-              },
-            },
-            { session }
-          );
-        }
       });
 
       if (savedTicket && savedTicket._id && !debit && purchaseMode === "existing_ticket_tx") {
@@ -4268,66 +4169,68 @@ router.post("/:id/ticket", auth, featureGuard("live"), async (req, res) => {
     // =========================
     // 9) NOTIFICHE (BEST-EFFORT)
     // =========================
-    try {
-      const scopeKey = scope === "private" ? (roomId || "private") : "public";
+    setImmediate(async () => {
+      try {
+        const scopeKey = scope === "private" ? (roomId || "private") : "public";
 
-      // Buyer notification (persistente)
-      await Notification.updateOne(
-        { dedupeKey: `ticket_purchased:buyer:${savedTicket._id.toString()}` },
-        {
-          $setOnInsert: {
-            userId: user._id,
-            actorId: event.creatorId, // “chi lo ha venduto”
-            type: "TICKET_PURCHASED",
-            targetType: "ticket",
-            targetId: savedTicket._id,
-            message: "Ticket purchased successfully",
-            isPersistent: true,
-            data: {
-              ticketId: savedTicket._id,
-              eventId: event._id,
-              eventTitle: event.title || null,
-              scope,
-              roomId: roomId || null,
-              priceTokens,
-              purchasedAt: savedTicket.purchasedAt || new Date(),
+        // Buyer notification (persistente)
+        await Notification.updateOne(
+          { dedupeKey: `ticket_purchased:buyer:${savedTicket._id.toString()}` },
+          {
+            $setOnInsert: {
+              userId: user._id,
+              actorId: event.creatorId, // “chi lo ha venduto”
+              type: "TICKET_PURCHASED",
+              targetType: "ticket",
+              targetId: savedTicket._id,
+              message: "Ticket purchased successfully",
+              isPersistent: true,
+              data: {
+                ticketId: savedTicket._id,
+                eventId: event._id,
+                eventTitle: event.title || null,
+                scope,
+                roomId: roomId || null,
+                priceTokens,
+                purchasedAt: savedTicket.purchasedAt || new Date(),
+              },
+              dedupeKey: `ticket_purchased:buyer:${savedTicket._id.toString()}`,
             },
-            dedupeKey: `ticket_purchased:buyer:${savedTicket._id.toString()}`,
           },
-        },
-        { upsert: true }
-      );
+          { upsert: true }
+        );
 
-      // Creator notification (persistente)
-      await Notification.updateOne(
-        { dedupeKey: `ticket_purchased:creator:${savedTicket._id.toString()}` },
-        {
-          $setOnInsert: {
-            userId: event.creatorId,
-            actorId: user._id, // chi ha comprato
-            type: "TICKET_PURCHASED",
-            targetType: "event",
-            targetId: event._id,
-            message: "A user has purchased a ticket",
-            isPersistent: true,
-            data: {
-              buyerId: user._id,
-              eventId: event._id,
-              ticketId: savedTicket._id,
-              scope,
-              roomId: roomId || null,
-              priceTokens,
-              scopeKey,
+        // Creator notification (persistente)
+        await Notification.updateOne(
+          { dedupeKey: `ticket_purchased:creator:${savedTicket._id.toString()}` },
+          {
+            $setOnInsert: {
+              userId: event.creatorId,
+              actorId: user._id, // chi ha comprato
+              type: "TICKET_PURCHASED",
+              targetType: "event",
+              targetId: event._id,
+              message: "A user has purchased a ticket",
+              isPersistent: true,
+              data: {
+                buyerId: user._id,
+                eventId: event._id,
+                ticketId: savedTicket._id,
+                scope,
+                roomId: roomId || null,
+                priceTokens,
+                scopeKey,
+              },
+              dedupeKey: `ticket_purchased:creator:${savedTicket._id.toString()}`,
             },
-            dedupeKey: `ticket_purchased:creator:${savedTicket._id.toString()}`,
           },
-        },
-        { upsert: true }
-      );
-    } catch (e) {
-      console.error("NOTIFICATION_TICKET_PURCHASE_FAILED", e?.message || e);
-      // NON bloccare l'acquisto
-    }
+          { upsert: true }
+        );
+      } catch (e) {
+        console.error("NOTIFICATION_TICKET_PURCHASE_FAILED", e?.message || e);
+        // NON bloccare l'acquisto
+      }
+    });
 
     logTicketFlow("SUCCESS", {
       route: "POST /api/events/:id/ticket",
