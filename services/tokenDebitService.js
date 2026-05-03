@@ -30,8 +30,10 @@ async function getLockedUser(userId, session) {
 }
 
 // Spendable = purchased + earnings + redeemable
+// Spendable = purchased + earnings + redeemable
 async function debitUserTokensBuckets({ userId, amountTokens, session }) {
   const amt = Number(amountTokens || 0);
+
   if (!Number.isFinite(amt) || amt <= 0) {
     return {
       ok: false,
@@ -42,9 +44,19 @@ async function debitUserTokensBuckets({ userId, amountTokens, session }) {
     };
   }
 
-  const u = await getLockedUser(userId, session);
+  const u = await User.findById(userId)
+    .select("_id tokenBalance tokenPurchased tokenEarnings tokenRedeemable tokenHeld")
+    .lean()
+    .session(session);
+
   if (!u) {
-    return { ok: false, code: "USER_NOT_FOUND", usedFromPurchased: 0, usedFromEarnings: 0, usedFromRedeemable: 0 };
+    return {
+      ok: false,
+      code: "USER_NOT_FOUND",
+      usedFromPurchased: 0,
+      usedFromEarnings: 0,
+      usedFromRedeemable: 0,
+    };
   }
 
   const purchased = n(u.tokenPurchased);
@@ -53,8 +65,15 @@ async function debitUserTokensBuckets({ userId, amountTokens, session }) {
   const held = n(u.tokenHeld);
 
   const spendable = purchased + earnings + redeemable;
+
   if (spendable < amt) {
-    return { ok: false, code: "INSUFFICIENT_TOKENS", usedFromPurchased: 0, usedFromEarnings: 0, usedFromRedeemable: 0 };
+    return {
+      ok: false,
+      code: "INSUFFICIENT_TOKENS",
+      usedFromPurchased: 0,
+      usedFromEarnings: 0,
+      usedFromRedeemable: 0,
+    };
   }
 
   let remaining = amt;
@@ -78,13 +97,41 @@ async function debitUserTokensBuckets({ userId, amountTokens, session }) {
     };
   }
 
-  u.tokenPurchased = purchased - usePurchased;
-  u.tokenEarnings = earnings - useEarnings;
-  u.tokenRedeemable = redeemable - useRedeemable;
-  u.tokenHeld = held;
+  const newPurchased = purchased - usePurchased;
+  const newEarnings = earnings - useEarnings;
+  const newRedeemable = redeemable - useRedeemable;
+  const newHeld = held;
+  const newBalance = newPurchased + newEarnings + newRedeemable + newHeld;
 
-  normalizeUserTokenState(u);
-  await u.save({ session });
+  const updated = await User.updateOne(
+    {
+      _id: userId,
+      tokenPurchased: purchased,
+      tokenEarnings: earnings,
+      tokenRedeemable: redeemable,
+      tokenHeld: held,
+    },
+    {
+      $set: {
+        tokenPurchased: newPurchased,
+        tokenEarnings: newEarnings,
+        tokenRedeemable: newRedeemable,
+        tokenHeld: newHeld,
+        tokenBalance: newBalance,
+      },
+    },
+    { session }
+  );
+
+  if (updated.modifiedCount !== 1) {
+    return {
+      ok: false,
+      code: "TOKEN_WRITE_CONFLICT",
+      usedFromPurchased: 0,
+      usedFromEarnings: 0,
+      usedFromRedeemable: 0,
+    };
+  }
 
   return {
     ok: true,
@@ -92,11 +139,11 @@ async function debitUserTokensBuckets({ userId, amountTokens, session }) {
     usedFromPurchased: usePurchased,
     usedFromEarnings: useEarnings,
     usedFromRedeemable: useRedeemable,
-    newTokenBalance: n(u.tokenBalance),
-    newTokenPurchased: n(u.tokenPurchased),
-    newTokenEarnings: n(u.tokenEarnings),
-    newTokenRedeemable: n(u.tokenRedeemable),
-    newTokenHeld: n(u.tokenHeld),
+    newTokenBalance: newBalance,
+    newTokenPurchased: newPurchased,
+    newTokenEarnings: newEarnings,
+    newTokenRedeemable: newRedeemable,
+    newTokenHeld: newHeld,
   };
 }
 
