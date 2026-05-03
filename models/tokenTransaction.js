@@ -69,6 +69,15 @@ TokenTransactionSchema.index(
 TokenTransactionSchema.index({ fromUserId: 1, createdAt: -1 });
 TokenTransactionSchema.index({ toUserId: 1, createdAt: -1 });
 
+// pair caps: daily/monthly outgoing totals for tips/donations
+TokenTransactionSchema.index({
+  fromUserId: 1,
+  toUserId: 1,
+  direction: 1,
+  context: 1,
+  createdAt: -1,
+});
+
 // per audit/filtri
 TokenTransactionSchema.index({ kind: 1, createdAt: -1 });
 TokenTransactionSchema.index({ context: 1, contextId: 1, createdAt: -1 });
