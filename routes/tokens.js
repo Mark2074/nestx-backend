@@ -278,6 +278,19 @@ router.post("/transfer", auth, featureGuard("tokens"), async (req, res) => {
     try {
     const { toUserId, amountTokens, context, eventId } = req.body;
 
+
+    const t0 = Date.now();
+    const mark = (label) => {
+      console.log(`[TOKENS][TIMING] ${label}`, {
+        at: new Date().toISOString(),
+        ms: Date.now() - t0,
+        fromUserId: String(req.user?._id || ""),
+        toUserId: String(toUserId || ""),
+        context: String(context || "").trim() || null,
+        eventId: eventId ? String(eventId) : null,
+      });
+    };
+
     logTokenFlow("START", {
       route: "POST /tokens/transfer",
       fromUserId: String(req.user?._id || ""),
@@ -286,6 +299,7 @@ router.post("/transfer", auth, featureGuard("tokens"), async (req, res) => {
       context: String(context || "").trim() || null,
       eventId: eventId ? String(eventId) : null,
     });
+    mark("start");
 
     if (!toUserId || !mongoose.Types.ObjectId.isValid(toUserId)) {
       return res.status(400).json({ error: "Invalid toUserId." });
@@ -324,6 +338,7 @@ router.post("/transfer", auth, featureGuard("tokens"), async (req, res) => {
 
     // TIP in live requires eventId (we must link tip -> event)
     if (safeContext === "tip") {
+      mark("before_tip_caps");
       if (!eventId || !mongoose.Types.ObjectId.isValid(String(eventId))) {
         logTokenFlow("ERROR", {
           route: "POST /tokens/transfer",
@@ -358,6 +373,7 @@ router.post("/transfer", auth, featureGuard("tokens"), async (req, res) => {
         context: "donation",
         since: todayStart,
       });
+      mark("after_tip_day_total");
 
       const monthTotal = await getPairOutgoingTotal({
         fromUserId,
@@ -365,6 +381,7 @@ router.post("/transfer", auth, featureGuard("tokens"), async (req, res) => {
         context: "donation",
         since: monthStart,
       });
+      mark("after_tip_month_total");
 
       if (dayTotal + amt > DONATION_PAIR_DAILY_CAP) {
         logTokenFlow("ERROR", {
@@ -408,12 +425,14 @@ router.post("/transfer", auth, featureGuard("tokens"), async (req, res) => {
     }
 
     if (safeContext === "tip") {
+      mark("before_tip_caps");
       const dayTotal = await getPairOutgoingTotal({
         fromUserId,
         toUserId,
         context: "tip",
         since: todayStart,
       });
+      mark("after_tip_day_total");
 
       const monthTotal = await getPairOutgoingTotal({
         fromUserId,
@@ -421,6 +440,7 @@ router.post("/transfer", auth, featureGuard("tokens"), async (req, res) => {
         context: "tip",
         since: monthStart,
       });
+      mark("after_tip_month_total");
 
       if (dayTotal + amt > TIP_PAIR_DAILY_CAP) {
         logTokenFlow("ERROR", {
@@ -479,7 +499,9 @@ router.post("/transfer", auth, featureGuard("tokens"), async (req, res) => {
     let txCredit = null;
     let goesToEarnings = false;
 
+    mark("before_tx");
     await runTokenTransferTxWithRetry(session, async () => {
+      mark("tx_start");
       // 0) idempotenza: se abbiamo già registrato il DEBIT per questo op, ritorno idempotente
       const existingDebit = await TokenTransaction.findOne({
         opId,
@@ -488,13 +510,15 @@ router.post("/transfer", auth, featureGuard("tokens"), async (req, res) => {
         fromUserId,
         toUserId,
       }).session(session);
-
+      
+      mark("idempotency_checked");
       if (existingDebit) {
         // carico utenti per risposta aggiornata
         [fromUser, toUser] = await Promise.all([
           User.findById(fromUserId).session(session),
           User.findById(toUserId).session(session),
         ]);
+        mark("users_reloaded");
 
         txDebit = [existingDebit];
         txCredit = [await TokenTransaction.findOne({
@@ -509,12 +533,14 @@ router.post("/transfer", auth, featureGuard("tokens"), async (req, res) => {
         return;
       }
 
+      mark("before_debit");
       // 1) Debit payer (shared rule: balance down; first consume earnings, then redeemable)
       const debit = await debitUserTokensBuckets({
         userId: fromUserId,
         amountTokens: amt,
         session,
       });
+      mark("after_debit");
 
       if (!debit.ok) {
         if (debit.code === "TOKEN_WRITE_CONFLICT") {
@@ -541,6 +567,7 @@ router.post("/transfer", auth, featureGuard("tokens"), async (req, res) => {
       toUser = await User.findById(toUserId)
         .select("_id displayName accountType isVip isCreator creatorEnabled creatorVerification tokenBalance tokenEarnings tokenRedeemable")
         .session(session);
+        mark("receiver_loaded");
 
       if (!toUser) {
         const err = new Error("Recipient user not found.");
@@ -581,6 +608,7 @@ router.post("/transfer", auth, featureGuard("tokens"), async (req, res) => {
       else inc.tokenEarnings = amt;
 
       await User.updateOne({ _id: toUserId }, { $inc: inc }, { session });
+      mark("receiver_credited");
 
       // 3) ledger (2 righe) con opId+groupId
       txDebit = await TokenTransaction.create(
@@ -607,6 +635,7 @@ router.post("/transfer", auth, featureGuard("tokens"), async (req, res) => {
         }],
         { session }
       );
+      mark("debit_tx_created");
 
       txCredit = await TokenTransaction.create(
         [{
@@ -624,13 +653,16 @@ router.post("/transfer", auth, featureGuard("tokens"), async (req, res) => {
         }],
         { session }
       );
+      mark("credit_tx_created");
 
       // 3.5) TIP live -> update Event tip total + goal progress (same TX)
       if (safeContext === "tip") {
 
         const now = new Date();
 
+        mark("before_event_tip_update");
         const ev = await Event.findById(String(eventId)).session(session);
+        mark("event_loaded_for_tip");
 
         if (!ev) {
           const err = new Error("Event not found");
@@ -670,6 +702,7 @@ router.post("/transfer", auth, featureGuard("tokens"), async (req, res) => {
         }
         
         await ev.save({ session });
+        mark("event_tip_saved");
       }
 
       // 4) carico fromUser/toUser per risposta minima dentro TX
@@ -682,6 +715,7 @@ router.post("/transfer", auth, featureGuard("tokens"), async (req, res) => {
           .session(session),
       ]);
     });
+    mark("after_tx");
 
     // NOTIFICATION + AUDIT best-effort fuori TX: non devono rallentare il pagamento live
     setImmediate(async () => {
