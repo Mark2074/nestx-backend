@@ -22,6 +22,7 @@ const { debitUserTokensBuckets } = require("../services/tokenDebitService");
 const Adv = require("../models/adv");
 const { detectContentSafety } = require("../utils/contentSafety");
 const { resetRuntimeForScope } = require("../services/liveRuntimeService");
+const { chargeUserToCreator } = require("../services/livePaymentService");
 
 router.get('/ping-events', (req, res) => {
   res.json({ status: 'ok', source: 'eventRoutes' });
@@ -1235,11 +1236,15 @@ router.post("/:id/private/cancel", auth, featureGuard("live"), async (req, res) 
  */
 router.post("/:id/private/buy", auth, featureGuard("live"), async (req, res) => {
   const session = await mongoose.startSession();
+
   try {
     const user = req.user;
-    if (!user) return res.status(401).json({ status: "error", message: "Unauthenticated user" });
+    if (!user) {
+      return res.status(401).json({ status: "error", message: "Unauthenticated user" });
+    }
 
     const eventId = req.params.id;
+    const WAIT_SECONDS = 120;
 
     logPrivateFlow("START", {
       route: "POST /api/events/:id/private/buy",
@@ -1247,153 +1252,96 @@ router.post("/:id/private/buy", auth, featureGuard("live"), async (req, res) => 
       buyerId: String(user?._id || ""),
     });
 
-    const WAIT_SECONDS = 120;
-
-    let payloadOut = null;
-    let purchaseMode = "new_purchase";
-
-    // idempotency (stabile per richiesta)
     const opIdRaw = req.headers["idempotency-key"] || req.headers["x-idempotency-key"];
-    const opId = (typeof opIdRaw === "string" && opIdRaw.trim().length >= 8)
-      ? opIdRaw.trim()
-      : `priv_${eventId}_${user._id.toString()}_${crypto.randomUUID()}`;
+    const opId =
+      typeof opIdRaw === "string" && opIdRaw.trim().length >= 8
+        ? opIdRaw.trim()
+        : `priv_${eventId}_${user._id.toString()}_${crypto.randomUUID()}`;
 
     const groupId = `grp_${crypto.randomUUID()}`;
 
-    await session.withTransaction(async () => {
-      const event = await Event.findById(eventId).session(session).exec();
-      if (!event) {
-        logPrivateFlow("ERROR", {
-          route: "POST /api/events/:id/private/buy",
-          eventId: String(eventId || ""),
-          buyerId: String(user?._id || ""),
-          code: "EVENT_NOT_FOUND",
-        });
+    let payloadOut = null;
 
+    await session.withTransaction(async () => {
+      const event = await Event.findById(eventId)
+        .select("_id creatorId status contentScope accessScope live privateSession")
+        .lean()
+        .session(session);
+
+      if (!event) {
         const e = new Error("Event not found");
-        e.httpStatus = 404; e.payload = { status: "error", message: "Event not found" };
+        e.httpStatus = 404;
+        e.payload = { status: "error", message: "Event not found" };
         throw e;
       }
 
-      if (
-        event.contentScope !== "HOT" ||
-        event.accessScope !== "public"
-      ) {
-        logPrivateFlow("ERROR", {
-          route: "POST /api/events/:id/private/buy",
-          eventId: String(eventId || ""),
-          buyerId: String(user?._id || ""),
-          creatorId: String(event.creatorId || ""),
-          code: "PRIVATE_SESSION_NOT_ALLOWED",
-          contentScope: String(event.contentScope || ""),
-          accessScope: String(event.accessScope || ""),
-        });
-
+      if (event.contentScope !== "HOT" || event.accessScope !== "public") {
         const e = new Error("PRIVATE_SESSION_NOT_ALLOWED");
         e.httpStatus = 400;
         e.payload = {
           status: "error",
           code: "PRIVATE_SESSION_NOT_ALLOWED",
-          message: "Internal private sessions allowed only for HOT public events"
+          message: "Internal private sessions allowed only for HOT public events",
         };
         throw e;
       }
 
       if (String(event.creatorId) === String(user._id)) {
-        logPrivateFlow("ERROR", {
-          route: "POST /api/events/:id/private/buy",
-          eventId: String(eventId || ""),
-          buyerId: String(user?._id || ""),
-          creatorId: String(event.creatorId || ""),
-          code: "HOST_CANNOT_BUY_PRIVATE",
-        });
-
-        const e = new Error("Host cannot buy private");
-        e.httpStatus = 403; e.payload = { status: "error", message: "Host cannot buy private" };
+        const e = new Error("HOST_CANNOT_BUY_PRIVATE");
+        e.httpStatus = 403;
+        e.payload = { status: "error", message: "Host cannot buy private" };
         throw e;
       }
 
       if (event.status !== "live") {
-        logPrivateFlow("ERROR", {
-          route: "POST /api/events/:id/private/buy",
-          eventId: String(eventId || ""),
-          buyerId: String(user?._id || ""),
-          creatorId: String(event.creatorId || ""),
+        const e = new Error("EVENT_NOT_LIVE");
+        e.httpStatus = 400;
+        e.payload = {
+          status: "error",
           code: "EVENT_NOT_LIVE",
-          eventStatus: String(event.status || ""),
-        });
-
-        const e = new Error("Event not live");
-        e.httpStatus = 400; e.payload = { status: "error", code: "EVENT_NOT_LIVE", message: "Event is not live" };
+          message: "Event is not live",
+        };
         throw e;
       }
 
-      // interlock: Private disabled while Goal active
       if (event.live?.goal?.isActive === true) {
-        logPrivateFlow("ERROR", {
-          route: "POST /api/events/:id/private/buy",
-          eventId: String(eventId || ""),
-          buyerId: String(user?._id || ""),
-          creatorId: String(event.creatorId || ""),
-          code: "PRIVATE_BLOCKED_BY_GOAL",
-        });
-
         const e = new Error("PRIVATE_BLOCKED_BY_GOAL");
         e.httpStatus = 400;
-        e.payload = { status: "error", code: "PRIVATE_BLOCKED_BY_GOAL", message: "Private session disabled because a goal is active." };
+        e.payload = {
+          status: "error",
+          code: "PRIVATE_BLOCKED_BY_GOAL",
+          message: "Private session disabled because a goal is active.",
+        };
         throw e;
       }
 
       const ps = event.privateSession || null;
-      
-      if (!ps?.isEnabled || !ps?.roomId) {
-        logPrivateFlow("ERROR", {
-          route: "POST /api/events/:id/private/buy",
-          eventId: String(eventId || ""),
-          buyerId: String(user?._id || ""),
-          creatorId: String(event.creatorId || ""),
-          code: "PRIVATE_NOT_ENABLED",
-          roomId: String(ps?.roomId || ""),
-          isEnabled: ps?.isEnabled === true,
-        });
 
-        const e = new Error("Private not enabled");
-        e.httpStatus = 400; e.payload = { status: "error", code: "PRIVATE_NOT_ENABLED", message: "Private session not available" };
+      if (!ps?.isEnabled || !ps?.roomId) {
+        const e = new Error("PRIVATE_NOT_ENABLED");
+        e.httpStatus = 400;
+        e.payload = {
+          status: "error",
+          code: "PRIVATE_NOT_ENABLED",
+          message: "Private session not available",
+        };
         throw e;
       }
 
-      // privata durante free: seats=1 (hard)
-      const seats = 1;
-
-      // must be paid
       const priceTokens = Number(ps.ticketPriceTokens || 0);
       if (!Number.isFinite(priceTokens) || priceTokens <= 0) {
-        logPrivateFlow("ERROR", {
-          route: "POST /api/events/:id/private/buy",
-          eventId: String(eventId || ""),
-          buyerId: String(user?._id || ""),
-          creatorId: String(event.creatorId || ""),
+        const e = new Error("PRIVATE_SESSION_NOT_PAID");
+        e.httpStatus = 400;
+        e.payload = {
+          status: "error",
           code: "PRIVATE_SESSION_NOT_PAID",
-          roomId: String(ps?.roomId || ""),
-          priceTokens: Number(priceTokens || 0),
-        });
-
-        const e = new Error("Private must be paid");
-        e.httpStatus = 400; e.payload = { status: "error", code: "PRIVATE_SESSION_NOT_PAID", message: "Private session cannot be free" };
+          message: "Private session cannot be free",
+        };
         throw e;
       }
 
       if (!tokensRuntimeEnabled()) {
-        logPrivateFlow("ERROR", {
-          route: "POST /api/events/:id/private/buy",
-          eventId: String(eventId || ""),
-          buyerId: String(user?._id || ""),
-          creatorId: String(event.creatorId || ""),
-          code: "TOKENS_DISABLED",
-          roomId: String(ps?.roomId || ""),
-        });
-
-        const e = new Error("Tokens disabled");
+        const e = new Error("TOKENS_DISABLED");
         e.httpStatus = 403;
         e.payload = {
           status: "error",
@@ -1403,23 +1351,18 @@ router.post("/:id/private/buy", auth, featureGuard("live"), async (req, res) => 
         throw e;
       }
 
-      // blocco reciproco
       const isBlocked = await isUserBlockedEitherSide(String(user._id), String(event.creatorId));
       if (isBlocked) {
-        logPrivateFlow("ERROR", {
-          route: "POST /api/events/:id/private/buy",
-          eventId: String(eventId || ""),
-          buyerId: String(user?._id || ""),
-          creatorId: String(event.creatorId || ""),
+        const e = new Error("EVENT_BLOCKED");
+        e.httpStatus = 403;
+        e.payload = {
+          status: "error",
           code: "EVENT_BLOCKED",
-        });
-
-        const e = new Error("Blocked");
-        e.httpStatus = 403; e.payload = { status: "error", code: "EVENT_BLOCKED", message: "Event not available" };
+          message: "Event not available",
+        };
         throw e;
       }
 
-      // 1) idempotency guard: se la stessa opId è già stata contabilizzata, NON riaddebito
       const existingDebitTx = await TokenTransaction.findOne({
         opId,
         kind: "private_purchase",
@@ -1429,19 +1372,150 @@ router.post("/:id/private/buy", auth, featureGuard("live"), async (req, res) => 
         roomId: ps.roomId,
         fromUserId: user._id,
         toUserId: event.creatorId,
-      }).session(session);
+      })
+        .lean()
+        .session(session);
 
       if (existingDebitTx) {
-        let existingTicket = await Ticket.findOne({
+        const existingTicket = await Ticket.findOne({
           eventId: event._id,
           userId: user._id,
           scope: "private",
           roomId: ps.roomId,
           status: "active",
-        }).session(session);
+        })
+          .lean()
+          .session(session);
 
-        if (!existingTicket) {
-          const createdTickets = await Ticket.create([{
+        const now = new Date();
+        const expiresAt = new Date(now.getTime() + WAIT_SECONDS * 1000);
+
+        payloadOut = {
+          status: "success",
+          message: "Private reserved. Waiting for host confirmation.",
+          data: {
+            eventId: event._id,
+            roomId: ps.roomId,
+            priceTokens,
+            waitSeconds: WAIT_SECONDS,
+            expiresAt,
+            ticketId: existingTicket?._id || null,
+            replayed: true,
+          },
+        };
+
+        return;
+      }
+
+      const existingTicket = await Ticket.findOne({
+        eventId: event._id,
+        userId: user._id,
+        scope: "private",
+        roomId: ps.roomId,
+        status: "active",
+      })
+        .lean()
+        .session(session);
+
+      if (existingTicket) {
+        const now = new Date();
+        const expiresAt = new Date(now.getTime() + WAIT_SECONDS * 1000);
+
+        const reserveUpdate = await Event.updateOne(
+          {
+            _id: event._id,
+            "privateSession.roomId": ps.roomId,
+            "privateSession.status": { $nin: ["reserved", "running"] },
+          },
+          {
+            $set: {
+              "privateSession.status": "reserved",
+              "privateSession.seats": 1,
+              "privateSession.reservedByUserId": user._id,
+              "privateSession.reservedAt": now,
+              "privateSession.reservedExpiresAt": expiresAt,
+              "privateSession.countdownSeconds": WAIT_SECONDS,
+              "privateSession.reservedPriceTokens": priceTokens,
+              "privateSession.reservedDescription": String(ps.description || ""),
+            },
+          },
+          { session }
+        );
+
+        if (reserveUpdate.modifiedCount !== 1) {
+          const e = new Error("PRIVATE_ALREADY_RESERVED");
+          e.httpStatus = 409;
+          e.payload = {
+            status: "error",
+            code: "PRIVATE_ALREADY_RESERVED",
+            message: "Private session already reserved",
+          };
+          throw e;
+        }
+
+        payloadOut = {
+          status: "success",
+          message: "Private reserved. Waiting for host confirmation.",
+          data: {
+            eventId: event._id,
+            roomId: ps.roomId,
+            priceTokens: existingTicket.priceTokens || priceTokens,
+            waitSeconds: WAIT_SECONDS,
+            expiresAt,
+            ticketId: existingTicket._id,
+          },
+        };
+
+        return;
+      }
+
+      if (["reserved", "running"].includes(String(ps.status || "idle"))) {
+        const e = new Error("PRIVATE_ALREADY_RESERVED");
+        e.httpStatus = 409;
+        e.payload = {
+          status: "error",
+          code: "PRIVATE_ALREADY_RESERVED",
+          message: "Private session already reserved",
+        };
+        throw e;
+      }
+
+      const payment = await chargeUserToCreator({
+        buyerId: user._id,
+        creatorId: event.creatorId,
+        amountTokens: priceTokens,
+        kind: "private_purchase",
+        context: "ticket",
+        contextId: String(event._id),
+        eventId: event._id,
+        scope: "private",
+        roomId: ps.roomId,
+        creatorBucket: "held",
+        metadata: {
+          privateFundsStatus: "held",
+        },
+        session,
+        opId,
+        groupId,
+      });
+
+      if (!payment.ok) {
+        const e = new Error(payment.code || "PRIVATE_PAYMENT_FAILED");
+        e.httpStatus = payment.code === "INSUFFICIENT_TOKENS" ? 400 : 409;
+        e.payload = {
+          status: "error",
+          code: payment.code || "PRIVATE_PAYMENT_FAILED",
+          message:
+            payment.code === "INSUFFICIENT_TOKENS"
+              ? "Insufficient tokens"
+              : "Private payment could not be completed",
+        };
+        throw e;
+      }
+
+      const createdTickets = await Ticket.create(
+        [
+          {
             eventId: event._id,
             userId: user._id,
             scope: "private",
@@ -1449,255 +1523,47 @@ router.post("/:id/private/buy", auth, featureGuard("live"), async (req, res) => 
             priceTokens,
             purchasedAt: new Date(),
             status: "active",
-          }], { session });
-
-          existingTicket = createdTickets?.[0] || null;
-        }
-
-        const now = new Date();
-        const expiresAt = new Date(now.getTime() + WAIT_SECONDS * 1000);
-
-        if (!["reserved", "running"].includes(String(ps.status || "idle"))) {
-          event.privateSession.status = "reserved";
-          event.privateSession.seats = seats;
-          event.privateSession.reservedByUserId = user._id;
-          event.privateSession.reservedAt = now;
-          event.privateSession.reservedExpiresAt = expiresAt;
-          event.privateSession.countdownSeconds = 120;
-          event.privateSession.reservedPriceTokens = priceTokens;
-          event.privateSession.reservedDescription = String(event.privateSession.description || "");
-          await event.save({ session });
-        }
-
-        purchaseMode = "idempotent_replay";
-
-        logPrivateFlow("SUCCESS", {
-          route: "POST /api/events/:id/private/buy",
-          eventId: String(event._id || ""),
-          buyerId: String(user?._id || ""),
-          creatorId: String(event.creatorId || ""),
-          roomId: String(ps?.roomId || ""),
-          priceTokens: Number(priceTokens || 0),
-          mode: "idempotent_replay",
-          ticketId: existingTicket?._id ? String(existingTicket._id) : null,
-          opId,
-          groupId,
-        });
-
-        payloadOut = {
-          status: "success",
-          message: "Private reserved. Waiting for host confirmation.",
-          data: {
-            eventId: event._id,
-            roomId: ps.roomId,
-            priceTokens,
-            waitSeconds: WAIT_SECONDS,
-            expiresAt: event.privateSession.reservedExpiresAt || expiresAt,
-            ticketId: existingTicket?._id || null,
-            replayed: true,
           },
-        };
-        return;
-      }
-
-      // 2) ticket già esistente per questa room? -> nessun nuovo addebito
-      const existingTicket = await Ticket.findOne({
-        eventId: event._id,
-        userId: user._id,
-        scope: "private",
-        roomId: ps.roomId,
-        status: "active",
-      }).session(session);
-
-      if (existingTicket) {
-        const now = new Date();
-        const expiresAt = new Date(now.getTime() + WAIT_SECONDS * 1000);
-
-        if (!["reserved", "running"].includes(String(ps.status || "idle"))) {
-          event.privateSession.status = "reserved";
-          event.privateSession.seats = seats;
-          event.privateSession.reservedByUserId = user._id;
-          event.privateSession.reservedAt = now;
-          event.privateSession.reservedExpiresAt = expiresAt;
-          event.privateSession.countdownSeconds = 120;
-          event.privateSession.reservedPriceTokens = priceTokens;
-          event.privateSession.reservedDescription = String(event.privateSession.description || "");
-          await event.save({ session });
-        }
-
-        purchaseMode = "existing_ticket_reuse";
-
-        logPrivateFlow("SUCCESS", {
-          route: "POST /api/events/:id/private/buy",
-          eventId: String(event._id || ""),
-          buyerId: String(user?._id || ""),
-          creatorId: String(event.creatorId || ""),
-          roomId: String(ps?.roomId || ""),
-          priceTokens: Number(existingTicket.priceTokens || Number(ps.ticketPriceTokens || 0) || 0),
-          mode: "existing_ticket_reuse",
-          ticketId: String(existingTicket._id || ""),
-          opId,
-        });
-
-        payloadOut = {
-          status: "success",
-          message: "Private reserved. Waiting for host confirmation.",
-          data: {
-            eventId: event._id,
-            roomId: ps.roomId,
-            priceTokens: existingTicket.priceTokens || Number(ps.ticketPriceTokens || 0),
-            waitSeconds: WAIT_SECONDS,
-            expiresAt: event.privateSession.reservedExpiresAt || expiresAt,
-            ticketId: existingTicket._id,
-          },
-        };
-        return;
-      }
-
-      // se già reserved/running -> sold out
-      if (["reserved", "running"].includes(String(ps.status || "idle"))) {
-        logPrivateFlow("ERROR", {
-          route: "POST /api/events/:id/private/buy",
-          eventId: String(event._id || ""),
-          buyerId: String(user?._id || ""),
-          creatorId: String(event.creatorId || ""),
-          roomId: String(ps?.roomId || ""),
-          code: "PRIVATE_ALREADY_RESERVED",
-          privateStatus: String(ps.status || "idle"),
-        });
-
-        const e = new Error("Private already reserved");
-        e.httpStatus = 409; e.payload = { status: "error", code: "PRIVATE_ALREADY_RESERVED", message: "Private session already reserved" };
-        throw e;
-      }
-
-      const debit = await debitUserTokensBuckets({
-        userId: user._id,
-        amountTokens: priceTokens,
-        session,
-      });
-
-      if (!debit.ok) {
-        logPrivateFlow("ERROR", {
-          route: "POST /api/events/:id/private/buy",
-          eventId: String(event._id || ""),
-          buyerId: String(user?._id || ""),
-          creatorId: String(event.creatorId || ""),
-          roomId: String(ps?.roomId || ""),
-          code: debit.code || "INSUFFICIENT_TOKENS",
-          priceTokens: Number(priceTokens || 0),
-          opId,
-        });
-
-        const e = new Error("Insufficient tokens");
-        e.httpStatus = 400;
-        e.payload = { status: "error", code: debit.code, message: "Insufficient tokens" };
-        throw e;
-      }
-
-      // credit creator -> HELD ONLY (protected private flow)
-      const creator = await User.findById(event.creatorId)
-        .select("_id tokenBalance tokenEarnings tokenRedeemable tokenHeld")
-        .session(session);
-
-      if (!creator) {
-        logPrivateFlow("ERROR", {
-          route: "POST /api/events/:id/private/buy",
-          eventId: String(event._id || ""),
-          buyerId: String(user?._id || ""),
-          creatorId: String(event.creatorId || ""),
-          roomId: String(ps?.roomId || ""),
-          code: "CREATOR_NOT_FOUND",
-          opId,
-        });
-
-        const e = new Error("Creator not found");
-        e.httpStatus = 404;
-        e.payload = { status: "error", message: "Creator not found" };
-        throw e;
-      }
-
-      // Private purchases must NEVER become immediately spendable/redeemable.
-      // Funds go to creator tokenHeld until a later release/freeze/refund decision.
-      await User.updateOne(
-        { _id: event.creatorId },
-        { $inc: { tokenBalance: priceTokens, tokenHeld: priceTokens } },
+        ],
         { session }
       );
 
-      await TokenTransaction.insertMany(
-        [
-          {
-            opId,
-            groupId,
-            fromUserId: user._id,
-            toUserId: event.creatorId,
-            kind: "private_purchase",
-            direction: "debit",
-            context: "ticket",
-            contextId: String(event._id),
-            amountTokens: priceTokens,
-            amountEuro: 0,
-            eventId: event._id,
-            scope: "private",
-            roomId: ps.roomId,
-            metadata: {
-              buyerBuckets: {
-                earnings: debit.usedFromEarnings,
-                redeemable: debit.usedFromRedeemable,
-              },
-              creatorBucket: "held",
-              privateFundsStatus: "held",
-            },
-          },
-          {
-            opId,
-            groupId,
-            fromUserId: user._id,
-            toUserId: event.creatorId,
-            kind: "private_purchase",
-            direction: "credit",
-            context: "ticket",
-            contextId: String(event._id),
-            amountTokens: priceTokens,
-            amountEuro: 0,
-            eventId: event._id,
-            scope: "private",
-            roomId: ps.roomId,
-            metadata: {
-              creatorBucket: "held",
-              privateFundsStatus: "held",
-            },
-          },
-        ],
-        { session, ordered: true }
-      );
+      const ticket = createdTickets?.[0] || null;
 
-      // create ticket private
-      const ticket = await Ticket.create([{
-        eventId: event._id,
-        userId: user._id,
-        scope: "private",
-        roomId: ps.roomId,
-        priceTokens,
-        purchasedAt: new Date(),
-        status: "active",
-      }], { session });
-
-      // reserve
       const now = new Date();
       const expiresAt = new Date(now.getTime() + WAIT_SECONDS * 1000);
 
-      event.privateSession.status = "reserved";
-      event.privateSession.seats = seats;
-      event.privateSession.reservedAt = now;
-      event.privateSession.reservedByUserId = user._id;
-      event.privateSession.reservedExpiresAt = expiresAt;
-      event.privateSession.countdownSeconds = 120;
-      event.privateSession.reservedPriceTokens = priceTokens;
-      event.privateSession.reservedDescription = String(event.privateSession.description || "");
+      const reserveUpdate = await Event.updateOne(
+        {
+          _id: event._id,
+          "privateSession.roomId": ps.roomId,
+          "privateSession.status": { $nin: ["reserved", "running"] },
+        },
+        {
+          $set: {
+            "privateSession.status": "reserved",
+            "privateSession.seats": 1,
+            "privateSession.reservedByUserId": user._id,
+            "privateSession.reservedAt": now,
+            "privateSession.reservedExpiresAt": expiresAt,
+            "privateSession.countdownSeconds": WAIT_SECONDS,
+            "privateSession.reservedPriceTokens": priceTokens,
+            "privateSession.reservedDescription": String(ps.description || ""),
+          },
+        },
+        { session }
+      );
 
-      await event.save({ session });
+      if (reserveUpdate.modifiedCount !== 1) {
+        const e = new Error("PRIVATE_ALREADY_RESERVED");
+        e.httpStatus = 409;
+        e.payload = {
+          status: "error",
+          code: "PRIVATE_ALREADY_RESERVED",
+          message: "Private session already reserved",
+        };
+        throw e;
+      }
 
       logPrivateFlow("SUCCESS", {
         route: "POST /api/events/:id/private/buy",
@@ -1707,7 +1573,7 @@ router.post("/:id/private/buy", auth, featureGuard("live"), async (req, res) => 
         roomId: String(ps?.roomId || ""),
         priceTokens: Number(priceTokens || 0),
         mode: "new_purchase",
-        ticketId: ticket?.[0]?._id ? String(ticket[0]._id) : null,
+        ticketId: ticket?._id ? String(ticket._id) : null,
         opId,
         groupId,
         creatorBucket: "held",
@@ -1721,8 +1587,8 @@ router.post("/:id/private/buy", auth, featureGuard("live"), async (req, res) => 
           roomId: ps.roomId,
           priceTokens,
           waitSeconds: WAIT_SECONDS,
-          expiresAt: event.privateSession.reservedExpiresAt,
-          ticketId: ticket?.[0]?._id,
+          expiresAt,
+          ticketId: ticket?._id || null,
         },
       };
     });
@@ -1739,9 +1605,15 @@ router.post("/:id/private/buy", auth, featureGuard("live"), async (req, res) => 
       stack: e?.stack || null,
     });
 
-    if (e && e.httpStatus && e.payload) return res.status(e.httpStatus).json(e.payload);
+    if (e && e.httpStatus && e.payload) {
+      return res.status(e.httpStatus).json(e.payload);
+    }
+
     console.error("PRIVATE_BUY_FAILED", e?.message || e);
-    return res.status(500).json({ status: "error", message: "Internal error while buying private session" });
+    return res.status(500).json({
+      status: "error",
+      message: "Internal error while buying private session",
+    });
   } finally {
     session.endSession();
   }
