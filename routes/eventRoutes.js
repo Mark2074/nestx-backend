@@ -1235,7 +1235,7 @@ router.post("/:id/private/cancel", auth, featureGuard("live"), async (req, res) 
  * @access  Private
  */
 router.post("/:id/private/buy", auth, featureGuard("live"), async (req, res) => {
-  const session = await mongoose.startSession();
+  const session = await mongoose.startSession()
 
   try {
     const user = req.user;
@@ -1244,6 +1244,17 @@ router.post("/:id/private/buy", auth, featureGuard("live"), async (req, res) => 
     }
 
     const eventId = req.params.id;
+
+    const t0 = Date.now();
+    const mark = (label) => {
+      console.log(`[PRIVATE][TIMING] ${label}`, {
+        at: new Date().toISOString(),
+        ms: Date.now() - t0,
+        eventId: String(eventId || ""),
+        buyerId: String(user?._id || ""),
+      });
+    };
+    
     const WAIT_SECONDS = 120;
 
     logPrivateFlow("START", {
@@ -1262,7 +1273,9 @@ router.post("/:id/private/buy", auth, featureGuard("live"), async (req, res) => 
 
     let payloadOut = null;
 
+    mark("before_tx");
     await session.withTransaction(async () => {
+      mark("tx_start");
       const event = await Event.findById(eventId)
         .select("_id creatorId status contentScope accessScope live privateSession")
         .lean()
@@ -1274,6 +1287,7 @@ router.post("/:id/private/buy", auth, featureGuard("live"), async (req, res) => 
         e.payload = { status: "error", message: "Event not found" };
         throw e;
       }
+      mark("event_loaded");
 
       if (event.contentScope !== "HOT" || event.accessScope !== "public") {
         const e = new Error("PRIVATE_SESSION_NOT_ALLOWED");
@@ -1362,6 +1376,7 @@ router.post("/:id/private/buy", auth, featureGuard("live"), async (req, res) => 
         };
         throw e;
       }
+      mark("block_checked");
 
       const existingDebitTx = await TokenTransaction.findOne({
         opId,
@@ -1480,6 +1495,7 @@ router.post("/:id/private/buy", auth, featureGuard("live"), async (req, res) => 
         throw e;
       }
 
+      mark("before_payment");
       const payment = await chargeUserToCreator({
         buyerId: user._id,
         creatorId: event.creatorId,
@@ -1498,6 +1514,7 @@ router.post("/:id/private/buy", auth, featureGuard("live"), async (req, res) => 
         opId,
         groupId,
       });
+      mark("after_payment");
 
       if (!payment.ok) {
         const e = new Error(payment.code || "PRIVATE_PAYMENT_FAILED");
@@ -1527,6 +1544,7 @@ router.post("/:id/private/buy", auth, featureGuard("live"), async (req, res) => 
         ],
         { session }
       );
+      mark("ticket_created");
 
       const ticket = createdTickets?.[0] || null;
 
@@ -1553,6 +1571,7 @@ router.post("/:id/private/buy", auth, featureGuard("live"), async (req, res) => 
         },
         { session }
       );
+      mark("event_reserved");
 
       if (reserveUpdate.modifiedCount !== 1) {
         const e = new Error("PRIVATE_ALREADY_RESERVED");
@@ -1592,6 +1611,7 @@ router.post("/:id/private/buy", auth, featureGuard("live"), async (req, res) => 
         },
       };
     });
+    mark("after_tx");
 
     return res.status(200).json(payloadOut);
   } catch (e) {
