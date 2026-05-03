@@ -636,65 +636,74 @@ router.post("/transfer", auth, featureGuard("tokens"), async (req, res) => {
         await ev.save({ session });
       }
 
-      // 4) NOTIFICA al ricevente (dentro TX)
-      const label =
-        safeContext === "tip" ? "mancia" :
-        safeContext === "donation" ? "donazione" :
-        safeContext === "cam" ? "token live" :
-        safeContext === "content" ? "pagamento contenuto" :
-        "token";
+      // 4) carico fromUser/toUser per risposta minima dentro TX
+      [fromUser, toUser] = await Promise.all([
+        User.findById(fromUserId)
+          .select("_id displayName tokenBalance tokenEarnings tokenRedeemable")
+          .session(session),
+        User.findById(toUserId)
+          .select("_id displayName accountType tokenBalance tokenEarnings tokenRedeemable")
+          .session(session),
+      ]);
+    });
 
-      await Notification.create([{
-        userId: toUserId,
-        actorId: fromUserId,
-        type: "TOKEN_RECEIVED",
-        targetType: "token_tx",
-        targetId: txCredit[0]._id,
-        message: `You have received a ${label}: +${amt} token`,
-        data: {
-          kind,
-          context: safeContext,
-          amountTokens: amt,
-          fromUserId,
-          opId,
-          groupId,
-          goesToEarnings,
-        },
-        isPersistent: true,
-        dedupeKey: `token_tx:${opId}:${kind}:received`,
-      }], { session });
+    // NOTIFICATION + AUDIT best-effort fuori TX: non devono rallentare il pagamento live
+    setImmediate(async () => {
+      try {
+        const label =
+          safeContext === "tip" ? "tip" :
+          safeContext === "donation" ? "donation" :
+          safeContext === "cam" ? "live token" :
+          safeContext === "content" ? "content payment" :
+          "token";
 
-      let actionType = null;
-      if (safeContext === "donation") actionType = "TOKEN_DONATION";
-      if (safeContext === "tip") actionType = "TOKEN_TIP";
-      if (safeContext === "cam" || safeContext === "content") actionType = "TOKEN_TRANSFER";
-
-      if (actionType) {
-        await TokenAuditLog.create(
-          [
-            {
-              actorUserId: fromUserId,
-              targetUserId: toUserId,
-              actionType,
-              amountTokens: amt,
-              opId,
-              groupId,
-              meta: {
-                goesToEarnings,
-                context: safeContext,
-                eventId: safeContext === "tip" ? String(eventId || "") : null,
-              },
-            },
-          ],
-          { session }
-        );
+        await Notification.create({
+          userId: toUserId,
+          actorId: fromUserId,
+          type: "TOKEN_RECEIVED",
+          targetType: "token_tx",
+          targetId: txCredit?.[0]?._id || null,
+          message: `You have received a ${label}: +${amt} token`,
+          data: {
+            kind,
+            context: safeContext,
+            amountTokens: amt,
+            fromUserId,
+            opId,
+            groupId,
+            goesToEarnings,
+          },
+          isPersistent: true,
+          dedupeKey: `token_tx:${opId}:${kind}:received`,
+        });
+      } catch (e) {
+        console.error("TOKEN_RECEIVED_NOTIFICATION_FAILED", e?.message || e);
       }
 
-      // 5) carico fromUser per risposta (post-update)
-      [fromUser, toUser] = await Promise.all([
-        User.findById(fromUserId).session(session),
-        User.findById(toUserId).session(session),
-      ]);
+      try {
+        let actionType = null;
+        if (safeContext === "donation") actionType = "TOKEN_DONATION";
+        if (safeContext === "tip") actionType = "TOKEN_TIP";
+        if (safeContext === "cam" || safeContext === "content") actionType = "TOKEN_TRANSFER";
+
+        if (actionType) {
+          await TokenAuditLog.create({
+            actorUserId: fromUserId,
+            targetUserId: toUserId,
+            actionType,
+            amountTokens: amt,
+            opId,
+            groupId,
+            meta: {
+              goesToEarnings,
+              context: safeContext,
+              eventId: safeContext === "tip" ? String(eventId || "") : null,
+            },
+          });
+        }
+      } catch (e) {
+        console.error("TOKEN_AUDIT_LOG_FAILED", e?.message || e);
+      }
     });
 
     logTokenFlow("SUCCESS", {

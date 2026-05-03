@@ -438,11 +438,6 @@ async function evaluateHostLifecycle({ event, scope }) {
   const consoleOnline =
     !!lastSeenAtMs && nowMs - lastSeenAtMs < HOST_STALE_MS;
 
-  const playbackUrl = getCanonicalPlaybackUrl(effectiveEvent);
-  const mediaProbe = await probePlaybackUrl(playbackUrl);
-
-  const mediaLive = Boolean(mediaProbe?.ok);
-
   const graceExpiresAt = runtime?.hostDisconnectGraceExpiresAt || null;
   const graceExpiresAtMs = graceExpiresAt ? new Date(graceExpiresAt).getTime() : 0;
 
@@ -459,8 +454,24 @@ async function evaluateHostLifecycle({ event, scope }) {
     };
   }
 
-  if (mediaLive) {
-    if (currentState !== "online" || runtime?.hostDisconnectGraceExpiresAt) {
+  /**
+   * CRITICAL:
+   * If already in grace, NEVER recreate grace timestamps.
+   * Only exit grace if host console is really back online.
+   */
+  if (currentState === "grace" && graceExpiresAt) {
+    if (graceExpiresAtMs && graceExpiresAtMs <= nowMs) {
+      await autoFinishEventForHostTimeout({ event: effectiveEvent, scope });
+
+      return {
+        hostDisconnectState: "offline",
+        hostGraceActive: false,
+        hostGraceExpiresAt: null,
+        autoFinished: true,
+      };
+    }
+
+    if (consoleOnline) {
       await Event.updateOne(
         { _id: effectiveEvent._id },
         {
@@ -469,6 +480,50 @@ async function evaluateHostLifecycle({ event, scope }) {
             [`${base}.hostDisconnectGraceStartedAt`]: null,
             [`${base}.hostDisconnectGraceExpiresAt`]: null,
             [`${base}.hostMediaStatus`]: "live",
+            [`${base}.hostMediaCheckedAt`]: now,
+          },
+        }
+      );
+
+      return {
+        hostDisconnectState: "online",
+        hostGraceActive: false,
+        hostGraceExpiresAt: null,
+        autoFinished: false,
+      };
+    }
+
+    await Event.updateOne(
+      { _id: effectiveEvent._id },
+      {
+        $set: {
+          [`${base}.hostMediaCheckedAt`]: now,
+        },
+      }
+    );
+
+    return {
+      hostDisconnectState: "grace",
+      hostGraceActive: true,
+      hostGraceExpiresAt: graceExpiresAt,
+      autoFinished: false,
+    };
+  }
+
+  const playbackUrl = getCanonicalPlaybackUrl(effectiveEvent);
+  const mediaProbe = await probePlaybackUrl(playbackUrl);
+  const mediaLive = Boolean(mediaProbe?.ok);
+
+  if (consoleOnline || mediaLive) {
+    if (currentState !== "online" || runtime?.hostDisconnectGraceExpiresAt) {
+      await Event.updateOne(
+        { _id: effectiveEvent._id },
+        {
+          $set: {
+            [`${base}.hostDisconnectState`]: "online",
+            [`${base}.hostDisconnectGraceStartedAt`]: null,
+            [`${base}.hostDisconnectGraceExpiresAt`]: null,
+            [`${base}.hostMediaStatus`]: mediaLive ? "live" : "idle",
             [`${base}.hostMediaCheckedAt`]: now,
           },
         }
@@ -483,36 +538,6 @@ async function evaluateHostLifecycle({ event, scope }) {
     };
   }
 
-  if (currentState === "grace" && graceExpiresAtMs && graceExpiresAtMs <= nowMs) {
-    await autoFinishEventForHostTimeout({ event: effectiveEvent, scope });
-
-    return {
-      hostDisconnectState: "offline",
-      hostGraceActive: false,
-      hostGraceExpiresAt: null,
-      autoFinished: true,
-    };
-  }
-
-  if (currentState === "grace" && graceExpiresAt) {
-    await Event.updateOne(
-      { _id: effectiveEvent._id },
-      {
-        $set: {
-          [`${base}.hostMediaStatus`]: mediaLive ? "live" : "idle",
-          [`${base}.hostMediaCheckedAt`]: now,
-        },
-      }
-    );
-
-    return {
-      hostDisconnectState: "grace",
-      hostGraceActive: true,
-      hostGraceExpiresAt: graceExpiresAt,
-      autoFinished: false,
-    };
-  }
-
   const graceStartedAt = now;
   const nextGraceExpiresAt = new Date(nowMs + HOST_DISCONNECT_GRACE_MS);
 
@@ -523,7 +548,7 @@ async function evaluateHostLifecycle({ event, scope }) {
         [`${base}.hostDisconnectState`]: "grace",
         [`${base}.hostDisconnectGraceStartedAt`]: graceStartedAt,
         [`${base}.hostDisconnectGraceExpiresAt`]: nextGraceExpiresAt,
-        [`${base}.hostMediaStatus`]: mediaLive ? "live" : "idle",
+        [`${base}.hostMediaStatus`]: "idle",
         [`${base}.hostMediaCheckedAt`]: now,
       },
     }
