@@ -107,6 +107,120 @@ async function ensureCreator(req, res, next) {
   }
 }
 
+router.post('/campaign/precheck', auth, ensureCreator, async (req, res) => {
+  try {
+    const {
+      targetType = "event",
+      startTime = null,
+      promote = false,
+    } = req.body;
+
+    if (promote !== true) {
+      return res.status(200).json({
+        status: "success",
+        data: { applicable: true, requiresConfirmation: false },
+      });
+    }
+
+    if (targetType !== "event") {
+      return res.status(200).json({
+        status: "success",
+        data: { applicable: true, requiresConfirmation: false },
+      });
+    }
+
+    const now = new Date();
+
+    if (!startTime) {
+      return res.status(200).json({
+        status: "success",
+        data: {
+          applicable: false,
+          requiresConfirmation: true,
+          code: "ADV_EVENT_NOT_SCHEDULED",
+        },
+      });
+    }
+
+    const start = new Date(startTime);
+    if (!Number.isFinite(start.getTime())) {
+      return res.status(200).json({
+        status: "success",
+        data: {
+          applicable: false,
+          requiresConfirmation: true,
+          code: "ADV_INVALID_START_TIME",
+        },
+      });
+    }
+
+    const diffHours = (start.getTime() - now.getTime()) / (1000 * 60 * 60);
+
+    if (diffHours > 48 || diffHours <= 0) {
+      return res.status(200).json({
+        status: "success",
+        data: {
+          applicable: false,
+          requiresConfirmation: true,
+          code: diffHours > 48 ? "ADV_TOO_EARLY" : "ADV_EVENT_STARTED",
+        },
+      });
+    }
+
+    const creatorId = req.user._id;
+    const startOfDay = getStartOfDay();
+
+    const freeAdvUsed = await Adv.countDocuments({
+      creatorId,
+      billingType: "free",
+      createdAt: { $gte: startOfDay },
+    });
+
+    if (freeAdvUsed >= ADV_FREE_PER_DAY) {
+      const tokensEnabled =
+        String(process.env.TOKENS_ENABLED || "").toLowerCase() === "true";
+      const economyEnabled =
+        String(process.env.ECONOMY_ENABLED || "").toLowerCase() === "true";
+
+      if (!tokensEnabled || !economyEnabled) {
+        return res.status(200).json({
+          status: "success",
+          data: {
+            applicable: false,
+            requiresConfirmation: true,
+            code: "ADV_PAID_DISABLED",
+          },
+        });
+      }
+
+      return res.status(200).json({
+        status: "success",
+        data: {
+          applicable: true,
+          requiresConfirmation: false,
+          paidRequired: true,
+          priceTokens: ADV_PAID_PRICE_TOKENS,
+        },
+      });
+    }
+
+    return res.status(200).json({
+      status: "success",
+      data: {
+        applicable: true,
+        requiresConfirmation: false,
+        freeAdvRemaining: Math.max(0, ADV_FREE_PER_DAY - freeAdvUsed),
+      },
+    });
+  } catch (err) {
+    console.error("ADV precheck error:", err);
+    return res.status(500).json({
+      status: "error",
+      message: "Internal error while checking ADV availability",
+    });
+  }
+});
+
 /**
  * POST /api/adv
  * Crea una nuova campagna ADV

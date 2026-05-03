@@ -459,7 +459,7 @@ async function evaluateHostLifecycle({ event, scope }) {
     };
   }
 
-  if (consoleOnline && mediaLive) {
+  if (mediaLive) {
     if (currentState !== "online" || runtime?.hostDisconnectGraceExpiresAt) {
       await Event.updateOne(
         { _id: effectiveEvent._id },
