@@ -59,6 +59,7 @@ const adminSecurityLogRoutes = require("./routes/adminSecurityLogRoutes");
 const adminAgeGateRoutes = require("./routes/adminAgeGateRoutes");
 const { startNativePrivateReleaseJob } = require("./jobs/nativePrivateReleaseJob");
 const { startLiveHostWatchdog } = require("./services/liveHostWatchdogService");
+const { startInternalPrivateReleaseJob } = require("./jobs/internalPrivateReleaseJob");
 
 // usa direttamente i file giusti
 const authRoutes = require('./routes/auth.routes');
@@ -131,6 +132,7 @@ mongoose.connect(process.env.MONGODB_URI)
     }
 
     startNativePrivateReleaseJob();
+    startInternalPrivateReleaseJob();
     startLiveHostWatchdog();
   })
   .catch((err) => {
