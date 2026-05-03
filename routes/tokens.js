@@ -407,7 +407,7 @@ router.post("/transfer", auth, featureGuard("tokens"), async (req, res) => {
       }
     }
 
-    if (safeContext === "tip") {
+    /*if (safeContext === "tip") {
       const dayTotal = await getPairOutgoingTotal({
         fromUserId,
         toUserId,
@@ -463,7 +463,7 @@ router.post("/transfer", auth, featureGuard("tokens"), async (req, res) => {
           data: { cap: TIP_PAIR_MONTHLY_CAP, alreadyUsed: monthTotal },
         });
       }
-    }
+    }*/
 
     // idempotency
     const opIdRaw = req.headers["idempotency-key"] || req.headers["x-idempotency-key"];
