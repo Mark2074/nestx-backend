@@ -58,7 +58,8 @@ const adminBugReportsRoutes = require("./routes/adminBugReportsRoutes");
 const adminSecurityLogRoutes = require("./routes/adminSecurityLogRoutes");
 const adminAgeGateRoutes = require("./routes/adminAgeGateRoutes");
 const { startNativePrivateReleaseJob } = require("./jobs/nativePrivateReleaseJob");
-const { startLiveHostWatchdog } = require("./services/liveHostWatchdogService");
+// const { startLiveHostWatchdog } = require("./services/liveHostWatchdogService");
+const { startLiveMediaHeartbeatService } = require("./services/liveMediaHeartbeatService");
 const { startInternalPrivateReleaseJob } = require("./jobs/internalPrivateReleaseJob");
 
 // usa direttamente i file giusti
@@ -133,7 +134,7 @@ mongoose.connect(process.env.MONGODB_URI)
 
     startNativePrivateReleaseJob();
     startInternalPrivateReleaseJob();
-    startLiveHostWatchdog();
+    startLiveMediaHeartbeatService();
   })
   .catch((err) => {
     console.error('❌ Errore connessione MongoDB:', err.message);

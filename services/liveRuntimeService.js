@@ -64,6 +64,12 @@ async function resetRuntimeForScope({
     [`${base}.hostDisconnectGraceStartedAt`]: null,
     [`${base}.hostDisconnectGraceExpiresAt`]: null,
     [`${base}.autoFinishReason`]: null,
+    [`${base}.mediaState`]: "offline",
+    [`${base}.mediaLastSeenAt`]: null,
+    [`${base}.mediaGraceStartedAt`]: null,
+    [`${base}.mediaGraceExpiresAt`]: null,
+    [`${base}.mediaSignature`]: null,
+    [`${base}.mediaCheckedAt`]: null,
   };
 
   if (endedAt) {

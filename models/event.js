@@ -336,6 +336,31 @@ const EventSchema = new mongoose.Schema(
         type: String,
         default: null,
       },
+      mediaState: {
+        type: String,
+        enum: ["live", "offline"],
+        default: "offline",
+      },
+      mediaLastSeenAt: {
+        type: Date,
+        default: null,
+      },
+      mediaGraceStartedAt: {
+        type: Date,
+        default: null,
+      },
+      mediaGraceExpiresAt: {
+        type: Date,
+        default: null,
+      },
+      mediaSignature: {
+        type: String,
+        default: null,
+      },
+      mediaCheckedAt: {
+        type: Date,
+        default: null,
+      },
       hostMediaStatus: {
         type: String,
         enum: ["idle", "live", "paused"],

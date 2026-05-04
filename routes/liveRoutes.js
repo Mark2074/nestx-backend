@@ -1793,10 +1793,13 @@ router.get("/:eventId/status", auth, featureGuard("live"), async (req, res) => {
 
     await syncEventViewerCountFromTruth(event._id, Number(viewersNow || 0));
 
-    const hostLifecycle = await evaluateHostLifecycle({
-      event,
-      scope: effectiveScope,
-    });
+    const mediaGraceExpiresAt = event?.live?.mediaGraceExpiresAt || null;
+
+    const hostLifecycle = {
+      hostDisconnectState: mediaGraceExpiresAt ? "grace" : "online",
+      hostGraceActive: Boolean(mediaGraceExpiresAt),
+      hostGraceExpiresAt: mediaGraceExpiresAt,
+    };
 
     const ps = event.privateSession || null;
     
@@ -2003,24 +2006,13 @@ router.post("/:eventId/ping", auth, featureGuard("live"), async (req, res) => {
     );
 
     await syncEventViewerCountFromTruth(event._id, Number(viewersNow || 0));
-    let hostLifecycle = {
-      hostDisconnectState: "online",
-      hostGraceActive: false,
-      hostGraceExpiresAt: null,
-    };
+    const mediaGraceExpiresAt = event?.live?.mediaGraceExpiresAt || null;
 
-    if (isHost) {
-      hostLifecycle = {
-        hostDisconnectState: "online",
-        hostGraceActive: false,
-        hostGraceExpiresAt: null,
-      };
-    } else {
-      hostLifecycle = await evaluateHostLifecycle({
-        event,
-        scope: effectiveScope,
-      });
-    }
+    const hostLifecycle = {
+      hostDisconnectState: mediaGraceExpiresAt ? "grace" : "online",
+      hostGraceActive: Boolean(mediaGraceExpiresAt),
+      hostGraceExpiresAt: mediaGraceExpiresAt,
+    };
 
     return res.status(200).json({
       status: "success",
