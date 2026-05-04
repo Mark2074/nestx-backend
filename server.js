@@ -58,7 +58,6 @@ const adminBugReportsRoutes = require("./routes/adminBugReportsRoutes");
 const adminSecurityLogRoutes = require("./routes/adminSecurityLogRoutes");
 const adminAgeGateRoutes = require("./routes/adminAgeGateRoutes");
 const { startNativePrivateReleaseJob } = require("./jobs/nativePrivateReleaseJob");
-// const { startLiveHostWatchdog } = require("./services/liveHostWatchdogService");
 const { startLiveMediaHeartbeatService } = require("./services/liveMediaHeartbeatService");
 const { startInternalPrivateReleaseJob } = require("./jobs/internalPrivateReleaseJob");
 

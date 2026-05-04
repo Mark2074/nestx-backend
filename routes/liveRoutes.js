@@ -44,6 +44,7 @@ function isEconomyEnabled() {
   return parseBool(process.env.ECONOMY_ENABLED);
 }
 
+// ⚠️ deprecated
 const HOST_STALE_MS = 20 * 1000;
 const HOST_DISCONNECT_GRACE_MS = 2 * 60 * 1000;
 const HOST_MEDIA_STALE_MS = 20 * 1000;
@@ -289,6 +290,7 @@ async function syncEventViewerCountFromTruth(eventId, viewersNow) {
   } catch {}
 }
 
+// ⚠️ DEPRECATED — no longer used
 async function startHostDisconnectGraceIfNeeded({ event, scope }) {
   const runtime = getHostRuntimeForScope(event, scope);
   const base = getRuntimeBasePath(scope);
@@ -401,6 +403,7 @@ async function autoFinishEventForHostTimeout({ event, scope }) {
   await syncEventViewerCountFromTruth(event._id, 0);
 }
 
+// ⚠️ DEPRECATED — replaced by media-driven system
 async function evaluateHostLifecycle({ event, scope }) {
   if (String(event?.status || "") !== "live") {
     return {
@@ -1314,16 +1317,6 @@ router.post("/:eventId/host-ping", auth, featureGuard("live"), async (req, res) 
 
     const base = getRuntimeBasePath(scope);
     const now = new Date();
-
-    await Event.updateOne(
-      { _id: event._id },
-      {
-        $set: {
-          [`${base}.hostLastSeenAt`]: now,
-        },
-      }
-    );
-
     console.log("HOST_PING_WRITE", {
       eventId,
       scope,
