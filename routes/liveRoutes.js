@@ -19,7 +19,6 @@ const Notification = require("../models/notification");
 const AdminAuditLog = require("../models/AdminAuditLog");
 const User = require("../models/user");
 const {
-  markHostRealtimeState,
   markHostHeartbeat,
   resetRuntimeForScope,
 } = require("../services/liveRuntimeService");
@@ -1188,81 +1187,18 @@ router.post("/:eventId/stop-media", auth, featureGuard("live"), async (req, res)
 
 /**
  * @route POST /api/live/:eventId/host-realtime-state
- * @desc Sync host realtime state (setup/joined/broadcasting/ended)
+ * @desc DEPRECATED — replaced by media-driven lifecycle
  * @access Private
  */
 router.post("/:eventId/host-realtime-state", auth, featureGuard("live"), async (req, res) => {
-  try {
-    const user = req.user;
-    if (!user) {
-      return res.status(401).json({ status: "error", message: "Unauthenticated user" });
-    }
-
-    const eventId = String(req.params.eventId || "").trim();
-    if (!eventId || eventId.length < 10) {
-      return res.status(400).json({ status: "error", message: "Invalid event ID" });
-    }
-
-    const scope = getScopeFromReq(req);
-    const nextState = String(req.body?.state || "").trim().toLowerCase();
-
-    if (!["idle", "setup", "joined", "broadcasting", "ended"].includes(nextState)) {
-      return res.status(400).json({
-        status: "error",
-        code: "INVALID_HOST_REALTIME_STATE",
-        message: "Invalid host realtime state",
-      });
-    }
-
-    const event = await Event.findById(eventId)
-      .select("_id creatorId")
-      .lean()
-      .exec();
-
-    if (!event) {
-      return res.status(404).json({ status: "error", message: "Event not found" });
-    }
-
-    const isHost = String(user._id) === String(event.creatorId);
-    const isAdmin = String(user.accountType || "").toLowerCase() === "admin";
-
-    if (!isHost && !isAdmin) {
-      return res.status(403).json({
-        status: "error",
-        code: "ACCESS_DENIED",
-        message: "Access denied",
-      });
-    }
-
-    await markHostRealtimeState({
-      eventId,
-      scope,
-      state: nextState,
-      broadcastStarted: nextState === "broadcasting",
-    });
-
-    if (["setup", "joined", "broadcasting"].includes(nextState)) {
-      await markHostHeartbeat({
-        eventId,
-        scope,
-      });
-    }
-
-    return res.status(200).json({
-      status: "success",
-      data: {
-        eventId,
-        scope,
-        state: nextState,
-      },
-    });
-  } catch (err) {
-    console.error("Error during host-realtime-state:", err);
-    return res.status(500).json({
-      status: "error",
-      message: "Internal error while syncing host realtime state",
-    });
-  }
+  return res.status(200).json({
+    status: "success",
+    data: {
+      eventId: String(req.params.eventId || ""),
+      scope: getScopeFromReq(req),
+      deprecated: true,
+    },
+  });
 });
 
 /**
@@ -1283,12 +1219,6 @@ router.post("/:eventId/host-ping", auth, featureGuard("live"), async (req, res) 
     }
 
     const scope = getScopeFromReq(req);
-    console.log("HOST_PING_HIT", {
-      eventId,
-      scope,
-      userId: String(req.user?._id || ""),
-      at: new Date().toISOString(),
-    });
 
     const event = await Event.findById(eventId)
       .select("_id creatorId status")
@@ -1315,24 +1245,12 @@ router.post("/:eventId/host-ping", auth, featureGuard("live"), async (req, res) 
       scope,
     });
 
-    const base = getRuntimeBasePath(scope);
-    const now = new Date();
-    console.log("HOST_PING_WRITE", {
-      eventId,
-      scope,
-      base,
-      at: now.toISOString(),
-    });
-
     return res.status(200).json({
       status: "success",
       data: {
         eventId,
         scope,
         heartbeatAt,
-        hostDisconnectState: "online",
-        hostGraceActive: false,
-        hostGraceExpiresAt: null,
       },
     });
   } catch (err) {
