@@ -138,6 +138,17 @@ router.get('/test', (req, res) => {
   });
 });
 
+function isValidEmailFormat(value) {
+  const email = String(value || "").trim().toLowerCase();
+
+  if (!email) return false;
+  if (email.length > 254) return false;
+  if (email.includes("..")) return false;
+
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+  return emailRegex.test(email);
+}
+
 // --------------------------------------------------
 // REGISTRAZIONE: POST /api/auth/register
 // body: { email, password, displayName }
@@ -154,12 +165,19 @@ router.post('/register', async (req, res) => {
       bio,
       language,
     } = req.body;
-    const emailNorm = String(email).trim().toLowerCase();
+    const emailNorm = String(email || "").trim().toLowerCase();
 
-    if (!email || !password || !displayName || !dateOfBirth) {
+    if (!emailNorm || !password || !displayName || !dateOfBirth) {
       return res.status(400).json({
         status: "error",
         message: "Email, password, displayName and dateOfBirth are required.",
+      });
+    }
+    if (!isValidEmailFormat(emailNorm)) {
+      return res.status(400).json({
+        status: "error",
+        code: "INVALID_EMAIL",
+        message: "Invalid email format.",
       });
     }
     if (typeof password !== "string" || password.length < 8) {
@@ -640,6 +658,10 @@ router.post("/forgot-password", async (req, res) => {
       return res.status(400).json({ status: "error", message: "Email required" });
     }
 
+    if (!isValidEmailFormat(emailNorm)) {
+      return genericOk();
+    }
+
     // sempre ok (anti-enumerazione)
     const genericOk = () =>
       res.json({
@@ -757,6 +779,10 @@ router.post("/verify-email/resend", async (req, res) => {
         status: "error",
         message: "Email required",
       });
+    }
+
+    if (!isValidEmailFormat(emailNorm)) {
+      return genericOk();
     }
 
     const genericOk = () =>
