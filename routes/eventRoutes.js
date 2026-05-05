@@ -526,6 +526,36 @@ async function releaseHeldFundsForNativePrivateEvent({ event, session, now = new
   };
 }
 
+const NO_HOT_EVENT_CATEGORIES = new Set([
+  "technology_ai",
+  "finance_investing",
+  "business",
+  "science",
+  "history_culture",
+  "psychology",
+  "gaming",
+  "live_shows",
+  "comedy",
+  "storytelling",
+  "fitness",
+  "food",
+  "travel",
+  "daily_life",
+  "fashion",
+  "tutorials",
+  "art",
+  "design",
+  "diy",
+  "coding",
+  "qa_chat",
+  "community",
+  "debate",
+  "coaching",
+  "news",
+  "announcements",
+  "experimental",
+]);
+
 /**
  * @route   POST /api/events
  * @desc    Crea un nuovo evento
@@ -634,6 +664,15 @@ router.post("/", auth, featureGuard("live"), async (req, res) => {
       });
     }
 
+    const safeCategory = String(category || "").trim().toLowerCase();
+
+    if (contentScopeRaw === "NO_HOT" && !NO_HOT_EVENT_CATEGORIES.has(safeCategory)) {
+      return res.status(400).json({
+        status: "error",
+        message: "Invalid or missing NO_HOT event category",
+      });
+    }
+
     // ✅ business rules:
     // NO_HOT può nascere SOLO private + paid
     if (contentScopeRaw === "NO_HOT" && safeAccessScope !== "private") {
@@ -684,7 +723,7 @@ router.post("/", auth, featureGuard("live"), async (req, res) => {
       creatorId: user._id,
       title: safeTitle,
       description: safeDescription,
-      category,
+      category: contentScopeRaw === "NO_HOT" ? safeCategory : "general",
       language: (language ? String(language) : (safeLang || "it")).trim().toLowerCase(),
       area: safeArea,
       targetProfileType: safeProfileType,
