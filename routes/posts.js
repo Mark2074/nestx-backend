@@ -1619,6 +1619,17 @@ router.get("/feed/following-mixed", auth, async (req, res) => {
       });
     }
 
+    const postIds = posts.map((p) => p._id);
+
+    const likedDocs = await PostLike.find({
+      postId: { $in: postIds },
+      userId: req.user._id,
+    })
+      .select("postId")
+      .lean();
+
+    const likedPostIdSet = new Set(likedDocs.map((l) => String(l.postId)));
+
     const postItems = posts.map((p) => {
       const authorObj = p?.authorId && typeof p.authorId === "object" ? p.authorId : null;
       const authorId = authorObj?._id ? String(authorObj._id) : String(p.authorId || "");
@@ -1634,6 +1645,7 @@ router.get("/feed/following-mixed", auth, async (req, res) => {
           visibility: p.visibility ?? "public",
           likeCount: p.likeCount ?? 0,
           commentCount: p.commentCount ?? 0,
+          likedByMe: likedPostIdSet.has(String(p._id)),
 
           // ✅ include media + poll for PostCard (fix: following feed only text)
           media: Array.isArray(p.media) ? p.media : [],
