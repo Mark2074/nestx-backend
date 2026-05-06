@@ -1619,16 +1619,21 @@ router.get("/feed/following-mixed", auth, async (req, res) => {
       });
     }
 
-    const postIds = posts.map((p) => p._id);
+    const postIds = posts
+      .map((p) => p?._id)
+      .filter(Boolean)
+      .map((id) => new mongoose.Types.ObjectId(String(id)));
 
     const likedDocs = await PostLike.find({
       postId: { $in: postIds },
-      userId: req.user._id,
+      userId: new mongoose.Types.ObjectId(String(req.user._id)),
     })
       .select("postId")
       .lean();
 
-    const likedPostIdSet = new Set(likedDocs.map((l) => String(l.postId)));
+    const likedPostIdSet = new Set(
+      likedDocs.map((l) => String(l.postId))
+    );
 
     const postItems = posts.map((p) => {
       const authorObj = p?.authorId && typeof p.authorId === "object" ? p.authorId : null;
