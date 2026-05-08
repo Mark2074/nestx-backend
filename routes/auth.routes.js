@@ -148,6 +148,10 @@ function buildEmailVerifyUrl(token) {
   return `${getFrontendBaseUrl()}/auth/verify-email?token=${encodeURIComponent(token)}`;
 }
 
+function buildPasswordResetUrl(token) {
+  return `${getFrontendBaseUrl()}/auth/reset-password?token=${encodeURIComponent(token)}`;
+}
+
 // -----------------------------
 // SMTP (dev-safe)
 // -----------------------------
@@ -759,8 +763,7 @@ router.post("/forgot-password", forgotPasswordRateLimit, async (req, res) => {
       { $set: { passwordResetTokenHash: tokenHash, passwordResetExpiresAt: expiresAt } }
     );
 
-    const base = process.env.FRONTEND_BASE_URL || "http://localhost:5173";
-    const link = `${base}/auth/reset-password?token=${encodeURIComponent(token)}`;
+    const link = buildPasswordResetUrl(token);
     if (!isProduction()) {
       console.log("RESET PASSWORD LINK (DEV):", link);
     }
@@ -778,8 +781,38 @@ router.post("/forgot-password", forgotPasswordRateLimit, async (req, res) => {
     try {
       await sendMail({
         to: user.email,
-        subject: "NestX — Reset password",
-        html: `...`,
+        subject: "NestX - Reset your password",
+        html: `
+          <div style="margin:0;padding:0;background:#f4f6f8;font-family:Arial,Helvetica,sans-serif;color:#111827;">
+            <div style="max-width:560px;margin:0 auto;padding:32px 20px;">
+              <div style="background:#ffffff;border:1px solid #e5e7eb;border-radius:14px;padding:28px;">
+                <h1 style="margin:0 0 18px;font-size:28px;line-height:1.2;color:#111827;">NestX</h1>
+                <h2 style="margin:0 0 18px;font-size:20px;line-height:1.35;color:#111827;">Reset your password</h2>
+                <p style="margin:0 0 14px;font-size:16px;line-height:1.55;color:#374151;">
+                  We received a request to reset your NestX password.
+                </p>
+                <p style="margin:0 0 24px;font-size:16px;line-height:1.55;color:#374151;">
+                  Click the button below to choose a new password.
+                </p>
+                <p style="margin:0 0 24px;">
+                  <a href="${link}" style="display:inline-block;background:#111827;color:#ffffff;text-decoration:none;font-weight:700;font-size:16px;line-height:1;padding:14px 18px;border-radius:10px;">
+                    Reset password
+                  </a>
+                </p>
+                <p style="margin:0 0 10px;font-size:14px;line-height:1.5;color:#4b5563;">
+                  This link expires in 30 minutes.
+                </p>
+                <p style="margin:0 0 18px;font-size:14px;line-height:1.5;color:#4b5563;">
+                  If you did not request this, you can ignore this email.
+                </p>
+                <p style="margin:0;font-size:12px;line-height:1.5;color:#6b7280;word-break:break-all;">
+                  If the button does not work, copy and paste this link into your browser:<br />
+                  <a href="${link}" style="color:#111827;">${link}</a>
+                </p>
+              </div>
+            </div>
+          </div>
+        `,
       });
     } catch (e) {
       console.error("SMTP SEND ERROR:", e);
