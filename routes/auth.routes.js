@@ -48,6 +48,83 @@ function addMinutes(date, minutes) {
   return new Date(date.getTime() + minutes * 60 * 1000);
 }
 
+function isProduction() {
+  return String(process.env.NODE_ENV || "").toLowerCase() === "production";
+}
+
+const authRateLimitBuckets = new Map();
+
+function makeRateLimiter({ windowMs, max, scope, keyFromReq }) {
+  return function rateLimiter(req, res, next) {
+    const now = Date.now();
+    const rawKey = keyFromReq(req);
+    const key = `${scope}:${rawKey || getClientIp(req) || "unknown"}`;
+    const bucket = authRateLimitBuckets.get(key);
+
+    if (!bucket || bucket.resetAt <= now) {
+      authRateLimitBuckets.set(key, { count: 1, resetAt: now + windowMs });
+      return next();
+    }
+
+    bucket.count += 1;
+
+    if (bucket.count > max) {
+      const retryAfterMs = Math.max(0, bucket.resetAt - now);
+      res.set("Retry-After", String(Math.ceil(retryAfterMs / 1000)));
+      return res.status(429).json({
+        status: "error",
+        code: "AUTH_RATE_LIMIT",
+        message: "Too many attempts. Please try again later.",
+        retryAfterMs,
+      });
+    }
+
+    return next();
+  };
+}
+
+function emailRateKey(req) {
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  return `${getClientIp(req) || "unknown"}:${email || "no-email"}`;
+}
+
+function tokenRateKey(req) {
+  const token = String(req.body?.token || "").trim();
+  return `${getClientIp(req) || "unknown"}:${token ? sha256(token).slice(0, 16) : "no-token"}`;
+}
+
+function userRateKey(req) {
+  return `${getClientIp(req) || "unknown"}:${req.user?._id || "no-user"}`;
+}
+
+const loginRateLimit = makeRateLimiter({
+  scope: "login",
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  keyFromReq: emailRateKey,
+});
+
+const forgotPasswordRateLimit = makeRateLimiter({
+  scope: "forgot-password",
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  keyFromReq: emailRateKey,
+});
+
+const resetPasswordRateLimit = makeRateLimiter({
+  scope: "reset-password",
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  keyFromReq: tokenRateKey,
+});
+
+const changePasswordRateLimit = makeRateLimiter({
+  scope: "change-password",
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  keyFromReq: userRateKey,
+});
+
 function publicUploadsUrl(p) {
   if (!p || typeof p !== "string") return p;
   if (!p.startsWith("/uploads/")) return p;
@@ -67,6 +144,10 @@ function getFrontendBaseUrl(req) {
   return "http://localhost:5173";
 }
 
+function buildEmailVerifyUrl(token) {
+  return `${getFrontendBaseUrl()}/auth/verify-email?token=${encodeURIComponent(token)}`;
+}
+
 // -----------------------------
 // SMTP (dev-safe)
 // -----------------------------
@@ -75,7 +156,7 @@ function isSmtpConfigured() {
 }
 
 async function sendMail({ to, subject, html }) {
-  const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+  const isProd = isProduction();
   const mailDisabled = String(process.env.MAIL_DISABLE || "").toLowerCase() === "true";
 
   // In produzione MAIL_DISABLE è vietato
@@ -343,8 +424,7 @@ router.post('/register', async (req, res) => {
       { $set: { emailVerifyTokenHash: verifyTokenHash, emailVerifyExpiresAt: verifyExpiresAt, emailVerifiedAt: null } }
     );
 
-    const base = process.env.FRONTEND_BASE_URL || "http://localhost:5173";
-    const verifyLink = `${base}/auth/verify-email?token=${encodeURIComponent(verifyToken)}`;
+    const verifyLink = buildEmailVerifyUrl(verifyToken);
     console.log("🔗 VERIFY EMAIL LINK:", verifyLink);
 
     await sendMail({
@@ -384,7 +464,7 @@ router.post('/register', async (req, res) => {
 // LOGIN: POST /api/auth/login
 // body: { email, password }
 // --------------------------------------------------
-router.post('/login', async (req, res) => {
+router.post('/login', loginRateLimit, async (req, res) => {
   try {
     const { email, password } = req.body;
     const emailNorm = String(email || "").trim().toLowerCase();
@@ -611,7 +691,7 @@ router.delete("/account", authMiddleware, async (req, res) => {
 });
 
 // POST /api/auth/change-password
-router.post("/change-password", authMiddleware, async (req, res) => {
+router.post("/change-password", authMiddleware, changePasswordRateLimit, async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
 
@@ -647,19 +727,13 @@ router.post("/change-password", authMiddleware, async (req, res) => {
 // PASSWORD RESET: POST /api/auth/forgot-password
 // body: { email }
 // --------------------------------------------------
-router.post("/forgot-password", async (req, res) => {
+router.post("/forgot-password", forgotPasswordRateLimit, async (req, res) => {
   try {
     const { email } = req.body;
     const emailNorm = String(email || "").trim().toLowerCase();
 
-    console.log("FORGOT-PASSWORD HIT:", emailNorm, new Date().toISOString());
-
     if (!emailNorm) {
       return res.status(400).json({ status: "error", message: "Email required" });
-    }
-
-    if (!isValidEmailFormat(emailNorm)) {
-      return genericOk();
     }
 
     // sempre ok (anti-enumerazione)
@@ -669,10 +743,12 @@ router.post("/forgot-password", async (req, res) => {
         message: "If the email exists, you will receive a link to reset your password.",
       });
 
+    if (!isValidEmailFormat(emailNorm)) {
+      return genericOk();
+    }
+
     const user = await User.findOne({ email: emailNorm });
     if (!user) return genericOk();
-
-    console.log("FORGOT-PASSWORD USER FOUND:", String(user._id));
 
     const token = makeRandomToken(32);
     const tokenHash = sha256(token);
@@ -685,8 +761,10 @@ router.post("/forgot-password", async (req, res) => {
 
     const base = process.env.FRONTEND_BASE_URL || "http://localhost:5173";
     const link = `${base}/auth/reset-password?token=${encodeURIComponent(token)}`;
-    console.log("🔗 RESET PASSWORD LINK (DEV):", link);
-    const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+    if (!isProduction()) {
+      console.log("RESET PASSWORD LINK (DEV):", link);
+    }
+    const isProd = isProduction();
     const mailDisabled = String(process.env.MAIL_DISABLE || "").toLowerCase() === "true";
 
     if (!isProd && mailDisabled) {
@@ -718,7 +796,7 @@ router.post("/forgot-password", async (req, res) => {
 // PASSWORD RESET: POST /api/auth/reset-password
 // body: { token, newPassword }
 // --------------------------------------------------
-router.post("/reset-password", async (req, res) => {
+router.post("/reset-password", resetPasswordRateLimit, async (req, res) => {
   try {
     const body = req.body || {};
     const { token, newPassword } = body;
@@ -781,15 +859,15 @@ router.post("/verify-email/resend", async (req, res) => {
       });
     }
 
-    if (!isValidEmailFormat(emailNorm)) {
-      return genericOk();
-    }
-
     const genericOk = () =>
       res.json({
         status: "ok",
         message: "If the account exists and is not yet verified, you will receive a verification email.",
       });
+
+    if (!isValidEmailFormat(emailNorm)) {
+      return genericOk();
+    }
 
     const user = await User.findOne({ email: emailNorm });
     if (!user) return genericOk();
@@ -813,8 +891,7 @@ router.post("/verify-email/resend", async (req, res) => {
       }
     );
 
-    const base = process.env.FRONTEND_BASE_URL || "http://localhost:5173";
-    const link = `${base}/auth/verify-email?token=${encodeURIComponent(token)}`;
+    const link = buildEmailVerifyUrl(token);
     console.log("🔗 VERIFY EMAIL RESEND LINK:", link);
 
     await sendMail({
@@ -861,8 +938,7 @@ router.post("/verify-email/request", authMiddleware, async (req, res) => {
       { $set: { emailVerifyTokenHash: tokenHash, emailVerifyExpiresAt: expiresAt } }
     );
 
-    const base = process.env.FRONTEND_BASE_URL || "http://localhost:5173";
-    const link = `${base}/auth/verify-email?token=${encodeURIComponent(token)}`;
+    const link = buildEmailVerifyUrl(token);
     console.log("🔗 VERIFY EMAIL LINK:", link);
 
     await sendMail({
