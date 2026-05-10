@@ -874,7 +874,7 @@ router.get('/serve', auth, async (req, res) => {
 
       const events = eventIds.length
         ? await Event.find({ _id: { $in: eventIds } })
-            .select("_id title coverImage ticketPriceTokens contentScope creatorId status")
+            .select("_id title description category coverImage startTime plannedStartTime ticketPriceTokens contentScope creatorId status")
             .populate({ path: "creatorId", select: "displayName avatar accountType role" })
             .lean()
         : [];
@@ -898,6 +898,11 @@ router.get('/serve', auth, async (req, res) => {
           const ev = eventById.get(String(adv.targetId));
           if (ev) {
             // cover + pricing + scope from event if missing
+            if (ev.title) adv.eventTitle = ev.title;
+            if (ev.description) adv.eventDescription = ev.description;
+            if (ev.category) adv.eventCategory = ev.category;
+            if (ev.startTime) adv.eventStartTime = ev.startTime;
+            if (ev.plannedStartTime) adv.eventPlannedStartTime = ev.plannedStartTime;
             if (!adv.mediaUrl && ev.coverImage) adv.mediaUrl = ev.coverImage;
             if (adv.ticketPriceTokens == null && ev.ticketPriceTokens != null)
               adv.ticketPriceTokens = ev.ticketPriceTokens;
