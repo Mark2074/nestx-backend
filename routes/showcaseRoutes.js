@@ -60,6 +60,7 @@ async function getNonPublicCreatorIds({ isAdminViewer = false } = {}) {
   const docs = await User.find({
     $or: [
       { accountType: "admin" },
+      { isInternalTest: true },
       { isBanned: true },
       { isDeleted: true },
       { deletedAt: { $ne: null } },
@@ -388,7 +389,7 @@ router.get("/serve", auth, async (req, res) => {
       creatorId: { $nin: [...blockedIds, ...hiddenCreatorIds] },
       ...activeWindowQuery(now),
     })
-      .populate({ path: "creatorId", select: "displayName avatar accountType role" })
+      .populate({ path: "creatorId", select: "displayName avatar accountType role isInternalTest" })
       .sort({ impressions: 1, createdAt: -1 })
       .lean();
 
@@ -457,7 +458,7 @@ router.get("/all", auth, async (req, res) => {
     const [total, itemsRaw] = await Promise.all([
       ShowcaseItem.countDocuments(q),
       ShowcaseItem.find(q)
-        .populate({ path: "creatorId", select: "displayName avatar accountType role" })
+        .populate({ path: "creatorId", select: "displayName avatar accountType role isInternalTest" })
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
@@ -521,7 +522,7 @@ router.post("/:id/click", auth, async (req, res) => {
     const isAdminViewer = String(req.user?.accountType || "").toLowerCase() === "admin";
 
     const creator = await User.findById(item.creatorId)
-      .select("_id accountType isBanned isDeleted deletedAt")
+      .select("_id accountType isInternalTest isBanned isDeleted deletedAt")
       .lean();
 
     if (!creator) {
@@ -532,6 +533,7 @@ router.post("/:id/click", auth, async (req, res) => {
       !isAdminViewer &&
       (
         creator?.accountType === "admin" ||
+        creator?.isInternalTest === true ||
         creator?.isBanned === true ||
         isUserDeletedLike(creator)
       )

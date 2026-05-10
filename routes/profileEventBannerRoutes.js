@@ -8,6 +8,7 @@ const Event = require("../models/event");
 const User = require("../models/user");
 const Follow = require("../models/Follow");
 const { isUserBlockedEitherSide } = require("../utils/blockUtils");
+const { shouldHideInternalTestUser } = require("../utils/internalTestAccounts");
 
 // GET /api/profile/event-banner/:userId
 // Banner evento sul profilo (derivato da Event, NON da Adv)
@@ -30,13 +31,17 @@ router.get("/event-banner/:userId", auth, async (req, res) => {
     }
 
     // ✅ PRIVACY GUARD: banner visibile solo a owner o follower accepted se profilo privato
-    const targetUser = await User.findById(userId).select("_id isPrivate").lean();
+    const targetUser = await User.findById(userId).select("_id isPrivate isInternalTest").lean();
     if (!targetUser) {
       return res.status(404).json({ status: "error", message: "User not found" });
     }
 
     const isOwner = meId && meId === String(targetUser._id);
     const isAdmin = String(req.user?.accountType || "").toLowerCase() === "admin";
+
+    if (shouldHideInternalTestUser(targetUser, req.user, isOwner ? req.user._id : null)) {
+      return res.status(200).json({ status: "ok", data: null });
+    }
 
     if (targetUser.isPrivate === true && !isOwner && !isAdmin) {
       const canSee = await Follow.findOne({

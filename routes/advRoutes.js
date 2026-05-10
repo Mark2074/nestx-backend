@@ -57,6 +57,7 @@ async function getNonPublicCreatorIds({ isAdminViewer = false } = {}) {
   const docs = await User.find({
     $or: [
       { accountType: "admin" },
+      { isInternalTest: true },
       { isBanned: true },
       { isDeleted: true },
       { deletedAt: { $ne: null } },
@@ -664,7 +665,7 @@ router.get('/profile/active/:userId', auth, async (req, res) => {
     const isAdminViewer = String(req.user?.accountType || "").toLowerCase() === "admin";
 
     const targetCreator = await User.findById(userId)
-      .select("_id accountType isBanned isDeleted deletedAt")
+      .select("_id accountType isInternalTest isBanned isDeleted deletedAt")
       .lean();
 
     if (!targetCreator) {
@@ -675,6 +676,7 @@ router.get('/profile/active/:userId', auth, async (req, res) => {
       !isAdminViewer &&
       (
         targetCreator?.accountType === "admin" ||
+        targetCreator?.isInternalTest === true ||
         targetCreator?.isBanned === true ||
         isUserDeletedLike(targetCreator)
       )
@@ -784,7 +786,7 @@ router.get('/serve', auth, async (req, res) => {
       );
 
       const events = await Event.find({ _id: { $in: eventIds } })
-        .select("_id status canceledAt endedAt")
+        .select("_id status canceledAt endedAt creatorId")
         .lean();
 
       const okEventIds = new Set(
@@ -793,7 +795,8 @@ router.get('/serve', auth, async (req, res) => {
             const st = String(ev?.status || "").toLowerCase();
             const isCanceled = Boolean(ev?.canceledAt) || st === "cancelled" || st === "canceled";
             const isFinished = Boolean(ev?.endedAt) || st === "finished" || st === "ended";
-            return !isCanceled && !isFinished;
+            const hiddenCreator = hiddenCreatorIds.some((id) => String(id) === String(ev?.creatorId));
+            return !isCanceled && !isFinished && !hiddenCreator;
           })
           .map((ev) => String(ev._id))
       );
@@ -856,7 +859,7 @@ router.get('/serve', auth, async (req, res) => {
 
       const creators = creatorIds.length
         ? await User.find({ _id: { $in: creatorIds } })
-            .select("_id displayName avatar accountType role")
+            .select("_id displayName avatar accountType role isInternalTest")
             .lean()
         : [];
 
@@ -875,7 +878,7 @@ router.get('/serve', auth, async (req, res) => {
       const events = eventIds.length
         ? await Event.find({ _id: { $in: eventIds } })
             .select("_id title description category coverImage startTime plannedStartTime ticketPriceTokens contentScope creatorId status")
-            .populate({ path: "creatorId", select: "displayName avatar accountType role" })
+            .populate({ path: "creatorId", select: "displayName avatar accountType role isInternalTest" })
             .lean()
         : [];
 
@@ -1006,7 +1009,7 @@ router.get('/serve-four', auth, async (req, res) => {
       const eventIds = Array.from(new Set(eventAds.map((a) => String(a.targetId)).filter(Boolean)));
 
       const events = await Event.find({ _id: { $in: eventIds } })
-        .select("_id status canceledAt endedAt")
+        .select("_id status canceledAt endedAt creatorId")
         .lean();
 
       const okEventIds = new Set(
@@ -1015,7 +1018,8 @@ router.get('/serve-four', auth, async (req, res) => {
             const st = String(ev?.status || "").toLowerCase();
             const isCanceled = Boolean(ev?.canceledAt) || st === "cancelled" || st === "canceled";
             const isFinished = Boolean(ev?.endedAt) || st === "finished" || st === "ended";
-            return !isCanceled && !isFinished;
+            const hiddenCreator = hiddenCreatorIds.some((id) => String(id) === String(ev?.creatorId));
+            return !isCanceled && !isFinished && !hiddenCreator;
           })
           .map((ev) => String(ev._id))
       );
@@ -1071,7 +1075,7 @@ router.get('/serve-four', auth, async (req, res) => {
 
       const creators = creatorIds.length
         ? await User.find({ _id: { $in: creatorIds } })
-            .select("_id displayName avatar accountType role")
+            .select("_id displayName avatar accountType role isInternalTest")
             .lean()
         : [];
 
@@ -1089,7 +1093,7 @@ router.get('/serve-four', auth, async (req, res) => {
       const events = evIds.length
         ? await Event.find({ _id: { $in: evIds } })
             .select("_id title coverImage ticketPriceTokens contentScope creatorId status")
-            .populate({ path: "creatorId", select: "displayName avatar accountType role" })
+            .populate({ path: "creatorId", select: "displayName avatar accountType role isInternalTest" })
             .lean()
         : [];
 
@@ -1173,11 +1177,7 @@ router.post('/:id/click', auth, async (req, res) => {
   try {
     const advId = req.params.id;
 
-    const adv = await Adv.findByIdAndUpdate(
-      advId,
-      { $inc: { clicks: 1 } },
-      { new: true }
-    );
+    const adv = await Adv.findById(advId);
 
     if (!adv) {
       return res.status(404).json({
@@ -1186,11 +1186,36 @@ router.post('/:id/click', auth, async (req, res) => {
       });
     }
 
+    const isAdminViewer = String(req.user?.accountType || "").toLowerCase() === "admin";
+    const creator = await User.findById(adv.creatorId)
+      .select("_id accountType isInternalTest isBanned isDeleted deletedAt")
+      .lean();
+
+    if (
+      !creator ||
+      (
+        !isAdminViewer &&
+        (
+          creator?.accountType === "admin" ||
+          creator?.isInternalTest === true ||
+          creator?.isBanned === true ||
+          isUserDeletedLike(creator)
+        )
+      )
+    ) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'ADV not found',
+      });
+    }
+
+    await Adv.updateOne({ _id: adv._id }, { $inc: { clicks: 1 } });
+
     return res.status(200).json({
       status: 'success',
       data: {
         id: adv._id,
-        clicks: adv.clicks,
+        clicks: Number(adv.clicks || 0) + 1,
       },
     });
   } catch (err) {

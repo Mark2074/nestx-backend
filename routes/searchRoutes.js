@@ -63,9 +63,10 @@ async function buildExcludedUserIds(meId, options = {}) {
 
   let privateNotAllowed = [];
   let bannedIds = [];
+  let internalTestIds = [];
 
   if (!isAdmin) {
-    const [privateNotAllowedDocs, bannedDocs] = await Promise.all([
+    const [privateNotAllowedDocs, bannedDocs, internalTestDocs] = await Promise.all([
       User.find({
         isPrivate: true,
         _id: { $nin: allowedPrivateObjIds },
@@ -77,13 +78,19 @@ async function buildExcludedUserIds(meId, options = {}) {
       })
         .select("_id")
         .lean(),
+      User.find({
+        isInternalTest: true,
+      })
+        .select("_id")
+        .lean(),
     ]);
 
     privateNotAllowed = privateNotAllowedDocs.map((u) => String(u._id));
     bannedIds = bannedDocs.map((u) => String(u._id));
+    internalTestIds = internalTestDocs.map((u) => String(u._id));
   }
 
-  const excluded = new Set([...blockedSet, ...privateNotAllowed, ...bannedIds]);
+  const excluded = new Set([...blockedSet, ...privateNotAllowed, ...bannedIds, ...internalTestIds]);
   excluded.delete(String(meId)); // io posso sempre vedermi
   return Array.from(excluded);
 }
@@ -265,20 +272,25 @@ router.get("/search", auth, async (req, res) => {
     const adminIds = adminUsers.map((u) => String(u._id));
 
     let bannedIds = [];
+    let internalTestIds = [];
     if (!isAdmin) {
-      const bannedUsers = await User.find({ isBanned: true }).select("_id").lean();
+      const [bannedUsers, internalTestUsers] = await Promise.all([
+        User.find({ isBanned: true }).select("_id").lean(),
+        User.find({ isInternalTest: true }).select("_id").lean(),
+      ]);
       bannedIds = bannedUsers.map((u) => String(u._id));
+      internalTestIds = internalTestUsers.map((u) => String(u._id));
     }
 
     // EXCLUSIONS:
     // - USERS: blocked + admin + banned
     // - POSTS/EVENTS: blocked + privateNotAllowed + admin + banned
     const finalExcludedUserIdsUsers = Array.from(
-      new Set([...blockedIds, ...adminIds, ...bannedIds])
+      new Set([...blockedIds, ...adminIds, ...bannedIds, ...internalTestIds])
     );
 
     const finalExcludedUserIdsPostsEvents = Array.from(
-      new Set([...excludedUserIds.map(String), ...adminIds, ...bannedIds])
+      new Set([...excludedUserIds.map(String), ...adminIds, ...bannedIds, ...internalTestIds])
     );
 
     const finalExcludedObjIdsUsers = finalExcludedUserIdsUsers

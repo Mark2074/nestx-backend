@@ -27,6 +27,7 @@ const {
 const { detectContentSafety } = require("../utils/contentSafety");
 const { analyzeTextModeration } = require("../services/moderationService");
 const Report = require("../models/Report");
+const { shouldHideInternalTestUser } = require("../utils/internalTestAccounts");
 
 const { execFile } = require("child_process");
 const ffprobePath = require("ffprobe-static")?.path;
@@ -351,6 +352,7 @@ async function getNonPublicAuthorIds({ isAdminViewer = false } = {}) {
   const docs = await User.find({
     $or: [
       { accountType: "admin" },
+      { isInternalTest: true },
       { isBanned: true },
       { isDeleted: true },
       { deletedAt: { $ne: null } },
@@ -403,11 +405,12 @@ function isEventVisibleNow(ev, nowMs) {
 
 async function guardPostAccessForComments({ meId, post, viewerAccountType = "" }) {
   const meIdStr = String(meId);
-  const authorIdStr = String(post.authorId);
+  const authorIdValue = post?.authorId?._id || post?.authorId;
+  const authorIdStr = String(authorIdValue || "");
   const isAdminViewer = String(viewerAccountType || "").toLowerCase() === "admin";
 
-  const author = await User.findById(post.authorId)
-    .select("accountType isPrivate isBanned isDeleted deletedAt")
+  const author = await User.findById(authorIdValue)
+    .select("accountType isPrivate isInternalTest isBanned isDeleted deletedAt")
     .lean();
 
   if (!author) {
@@ -419,16 +422,16 @@ async function guardPostAccessForComments({ meId, post, viewerAccountType = "" }
     return { ok: false, status: 404, code: "POST_NOT_FOUND", message: "Post not found" };
   }
 
-  // banned/deleted invisible to normal users
-  if (!isAdminViewer && (author?.isBanned === true || isUserDeletedLike(author))) {
+  // internal-test/banned/deleted invisible to normal users
+  if (!isAdminViewer && (author?.isInternalTest === true || author?.isBanned === true || isUserDeletedLike(author))) {
     return { ok: false, status: 404, code: "POST_NOT_FOUND", message: "Post not found" };
   }
 
   // block either side
   const blocked = await Block.findOne({
     $or: [
-      { blockerId: meId, blockedId: post.authorId },
-      { blockerId: post.authorId, blockedId: meId },
+      { blockerId: meId, blockedId: authorIdValue },
+      { blockerId: authorIdValue, blockedId: meId },
     ],
   })
     .select("_id")
@@ -449,7 +452,7 @@ async function guardPostAccessForComments({ meId, post, viewerAccountType = "" }
   if (post.visibility === "followers" && !isOwner) {
     const rel = await Follow.findOne({
       followerId: meId,
-      followingId: post.authorId,
+      followingId: authorIdValue,
       status: "accepted",
     })
       .select("_id")
@@ -464,7 +467,7 @@ async function guardPostAccessForComments({ meId, post, viewerAccountType = "" }
   if (author?.isPrivate === true && !isOwner) {
     const rel = await Follow.findOne({
       followerId: meId,
-      followingId: post.authorId,
+      followingId: authorIdValue,
       status: "accepted",
     })
       .select("_id")
@@ -806,6 +809,19 @@ router.post("/:id/poll/vote", auth, async (req, res) => {
       return res.status(404).json({ status: "error", message: "Post not found" });
     }
 
+    const access = await guardPostAccessForComments({
+      meId,
+      post,
+      viewerAccountType: req.user?.accountType,
+    });
+    if (!access.ok) {
+      return res.status(access.status).json({
+        status: "error",
+        code: access.code,
+        message: access.message,
+      });
+    }
+
     if (!post.poll || !post.poll.question) {
       return res.status(400).json({ status: "error", message: "This post is not a poll" });
     }
@@ -957,13 +973,22 @@ router.get("/user/:userId", auth, async (req, res) => {
     // - owner
     // - follower accepted
     const targetUser = await User.findById(userId)
-      .select("_id isPrivate accountType isBanned isDeleted deletedAt")
+      .select("_id isPrivate accountType isInternalTest isBanned isDeleted deletedAt")
       .lean();
     if (!targetUser) {
       return res.status(404).json({ status: "error", message: "User not found" });
     }
 
     const isAdminViewer = String(req.user?.accountType || "").toLowerCase() === "admin";
+    const isOwner = meId && meId === String(targetUser._id);
+
+    if (shouldHideInternalTestUser(targetUser, req.user, isOwner ? req.user._id : null)) {
+      return res.status(404).json({
+        status: "error",
+        code: "USER_NOT_FOUND",
+        message: "User not found",
+      });
+    }
 
     if (
       !isAdminViewer &&
@@ -979,8 +1004,6 @@ router.get("/user/:userId", auth, async (req, res) => {
         message: "User not found",
       });
     }
-
-    const isOwner = meId && meId === String(targetUser._id);
 
     if (!isAdminViewer && targetUser.isPrivate === true && !isOwner) {
       const canSee = await Follow.findOne({
@@ -1393,6 +1416,7 @@ router.get('/feed/following', auth, async (req, res) => {
           const visibleUsers = await User.find({
             _id: { $in: rawFollowingIds },
             accountType: { $ne: "admin" },
+            isInternalTest: { $ne: true },
             isBanned: { $ne: true },
             isDeleted: { $ne: true },
             deletedAt: null,
@@ -1523,6 +1547,7 @@ router.get("/feed/following-mixed", auth, async (req, res) => {
       const visibleUsers = await User.find({
         _id: { $in: safeFollowingIds.map((id) => new mongoose.Types.ObjectId(String(id))) },
         accountType: { $ne: "admin" },
+        isInternalTest: { $ne: true },
         isBanned: { $ne: true },
         isDeleted: { $ne: true },
         deletedAt: null,
@@ -1727,10 +1752,26 @@ router.post("/:id/likes", auth, async (req, res) => {
 
     const postObjId = new mongoose.Types.ObjectId(postIdStr);
     const userObjId = new mongoose.Types.ObjectId(userIdStr);
-    const post = await Post.findById(postObjId).select("authorId").lean();
+    const post = await Post.findById(postObjId)
+      .select("authorId visibility isHidden moderation")
+      .lean();
     if (!post) {
       return res.status(404).json({ status: "error", message: "Post not found" });
     }
+
+    const access = await guardPostAccessForComments({
+      meId: req.user._id,
+      post,
+      viewerAccountType: req.user?.accountType,
+    });
+    if (!access.ok) {
+      return res.status(access.status).json({
+        status: "error",
+        code: access.code,
+        message: access.message,
+      });
+    }
+
     if (String(post.authorId) === String(userObjId)) {
       return res.status(400).json({ status: "error", message: "You can’t like your own post" });
     }
@@ -2233,12 +2274,27 @@ router.delete("/:postId", auth, async (req, res) => {
     const meId = String(req.user?._id || "");
     const isAdmin = String(req.user?.accountType || "").toLowerCase() === "admin";
 
-    const post = await Post.findById(postId).select("_id authorId moderation.isDeleted").lean();
+    const post = await Post.findById(postId)
+      .select("_id authorId visibility isHidden moderation")
+      .lean();
     if (!post) {
       return res.status(404).json({ status: "error", code: "POST_NOT_FOUND", message: "Post not found" });
     }
 
     const isOwner = String(post.authorId) === meId;
+    const access = await guardPostAccessForComments({
+      meId: req.user._id,
+      post,
+      viewerAccountType: req.user?.accountType,
+    });
+    if (!access.ok && !isOwner && !isAdmin) {
+      return res.status(access.status).json({
+        status: "error",
+        code: access.code,
+        message: access.message,
+      });
+    }
+
     if (!isOwner && !isAdmin) {
       return res.status(403).json({ status: "error", code: "FORBIDDEN", message: "You can only delete your own posts" });
     }

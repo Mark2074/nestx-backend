@@ -87,6 +87,7 @@ const userSchema = new mongoose.Schema(
       default: null,
     },
     isVip: { type: Boolean, default: false },
+    isInternalTest: { type: Boolean, default: false, index: true },
 
     vipExpiresAt: { type: Date, default: null },
     vipAutoRenew: { type: Boolean, default: false },

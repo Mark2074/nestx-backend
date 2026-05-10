@@ -23,6 +23,7 @@ const Adv = require("../models/adv");
 const { detectContentSafety } = require("../utils/contentSafety");
 const { resetRuntimeForScope } = require("../services/liveRuntimeService");
 const { chargeUserToCreator } = require("../services/livePaymentService");
+const { isAdminViewer, shouldHideInternalTestUser } = require("../utils/internalTestAccounts");
 
 router.get('/ping-events', (req, res) => {
   res.json({ status: 'ok', source: 'eventRoutes' });
@@ -3111,10 +3112,19 @@ router.get("/feed", auth, featureGuard("live"), async (req, res) => {
     const mutedUserIds = await getMutedUserIds(req.user._id);
     // 1b) prendo gli utenti bloccati (both sides)
     const blockedUserIds = await getBlockedUserIds(req.user._id);
+    const internalTestCreatorIds = isAdminViewer(req.user)
+      ? []
+      : await User.find({ isInternalTest: true }).select("_id").lean();
 
     const query = {
       visibility: { $ne: "unlisted" },
-      creatorId: { $nin: [...mutedUserIds, ...blockedUserIds] },
+      creatorId: {
+        $nin: [
+          ...mutedUserIds,
+          ...blockedUserIds,
+          ...internalTestCreatorIds.map((u) => u._id),
+        ],
+      },
     };
 
     // Filtro per stato
@@ -3147,7 +3157,7 @@ router.get("/feed", auth, featureGuard("live"), async (req, res) => {
       .limit(limit)
       .populate({
         path: "creatorId",
-        select: "displayName avatar accountType role",
+        select: "displayName avatar accountType role isInternalTest",
       })
       .exec();
 
@@ -3400,7 +3410,7 @@ router.get("/:id", auth, featureGuard("live"), async (req, res) => {
       .populate({
         path: "creatorId",
         // prendiamo più varianti perché nel DB i nomi possono differire
-        select: "displayName username name avatar avatarUrl profileImage profilePicture accountType role",
+        select: "displayName username name avatar avatarUrl profileImage profilePicture accountType role isInternalTest",
       })
       .exec();
 
@@ -3427,6 +3437,12 @@ router.get("/:id", auth, featureGuard("live"), async (req, res) => {
     }
 
     const isOwner = String(event.creatorId?._id || event.creatorId) === String(req.user._id);
+    if (shouldHideInternalTestUser(event.creatorId, req.user, isOwner ? req.user._id : null)) {
+      return res.status(404).json({
+        status: "error",
+        message: "Event not found",
+      });
+    }
 
     if (event.visibility === "unlisted" && !isOwner) {
       return res.status(403).json({
@@ -3450,7 +3466,7 @@ router.get("/:id", auth, featureGuard("live"), async (req, res) => {
           Object.assign(event, evTx.toObject());
           await event.populate({
             path: "creatorId",
-            select: "displayName username name avatar avatarUrl profileImage profilePicture accountType role",
+            select: "displayName username name avatar avatarUrl profileImage profilePicture accountType role isInternalTest",
           });
         });
       } finally {

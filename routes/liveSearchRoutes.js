@@ -24,7 +24,8 @@ function escapeRegex(s) {
 }
 
 // blocchi + privati non seguiti
-async function buildExcludedUserIds(meId) {
+async function buildExcludedUserIds(meId, options = {}) {
+  const isAdmin = options.isAdmin === true;
   // blocchi (entrambi i lati) usando la collection Block
   const blockedIds = await getBlockedUserIds(meId); // io->loro + loro->me
   const blockedSet = new Set(blockedIds.map((id) => String(id)));
@@ -44,16 +45,27 @@ async function buildExcludedUserIds(meId) {
     (id) => new mongoose.Types.ObjectId(String(id))
   );
 
-  const privateNotAllowedDocs = await User.find({
-    isPrivate: true,
-    _id: { $nin: allowedPrivateObjIds },
-  })
-    .select("_id")
-    .lean();
+  let privateNotAllowedDocs = [];
+  let internalTestDocs = [];
+
+  if (!isAdmin) {
+    [privateNotAllowedDocs, internalTestDocs] = await Promise.all([
+      User.find({
+        isPrivate: true,
+        _id: { $nin: allowedPrivateObjIds },
+      })
+        .select("_id")
+        .lean(),
+      User.find({ isInternalTest: true })
+        .select("_id")
+        .lean(),
+    ]);
+  }
 
   const privateNotAllowed = privateNotAllowedDocs.map((u) => String(u._id));
+  const internalTestIds = internalTestDocs.map((u) => String(u._id));
 
-  const excluded = new Set([...blockedSet, ...privateNotAllowed]);
+  const excluded = new Set([...blockedSet, ...privateNotAllowed, ...internalTestIds]);
   excluded.delete(String(meId)); // io posso sempre vedermi
   return Array.from(excluded);
 }
@@ -86,6 +98,7 @@ router.get("/search", auth, async (req, res) => {
   try {
     const me = req.user;
     const contentScope = req.query.contentScope ? String(req.query.contentScope).trim().toUpperCase() : null;
+    const isAdmin = String(me?.accountType || "").toLowerCase() === "admin";
 
     // VIP = status boolean (come deciso)
     const isVip = me?.isVip === true;
@@ -117,7 +130,7 @@ router.get("/search", auth, async (req, res) => {
     const allowedProfileTypes = ["male", "female", "couple", "gay", "trans"];
     const safeProfileType = allowedProfileTypes.includes(profileType) ? profileType : null;
 
-    const excludedUserIds = await buildExcludedUserIds(meObjId);
+    const excludedUserIds = await buildExcludedUserIds(meObjId, { isAdmin });
     const excludedObjIds = excludedUserIds.map((id) => new mongoose.Types.ObjectId(id));
 
     const adminUsers = await User.find({ accountType: "admin" }).select("_id").lean();

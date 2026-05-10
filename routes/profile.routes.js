@@ -13,6 +13,7 @@ const {
   deleteFromR2ByUrl,
 } = require("../services/r2MediaService");
 const { maybeRenewVip } = require("../services/vipService");
+const { shouldHideInternalTestUser } = require("../utils/internalTestAccounts");
 
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
 const ALLOWED_MIMES = new Set(["image/jpeg", "image/png", "image/webp"]);
@@ -386,7 +387,7 @@ router.get("/public/:id", auth, async (req, res) => {
     // Dati base utente (profilo pubblico)
     const user = await User.findById(targetUserId)
       .select(
-        "_id displayName profileType area bio avatar coverImage interests language isVip verifiedUser isCreator creatorEnabled payoutProvider payoutEnabled payoutStatus createdAt verificationStatus verificationPublicVideoUrl isPrivate accountType status accountStatus isDeleted deletedAt deletionStatus"
+        "_id displayName profileType area bio avatar coverImage interests language isVip verifiedUser isCreator creatorEnabled payoutProvider payoutEnabled payoutStatus createdAt verificationStatus verificationPublicVideoUrl isPrivate accountType status accountStatus isDeleted deletedAt deletionStatus isInternalTest"
       )
       .lean()
       .exec();
@@ -427,6 +428,15 @@ router.get("/public/:id", auth, async (req, res) => {
 
     const meId = req.user?._id?.toString();
     const isAdminViewer = req.user?.accountType === "admin";
+    const isOwner = meId && meId === String(user._id);
+
+    if (shouldHideInternalTestUser(user, req.user, isOwner ? req.user._id : null)) {
+      return res.status(404).json({
+        status: "error",
+        code: "USER_NOT_FOUND",
+        message: "User not found",
+      });
+    }
 
     // 🔒 BANNED INVISIBLE TO NORMAL USERS
     if (!isAdminViewer && user?.isBanned === true) {

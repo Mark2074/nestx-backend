@@ -9,6 +9,7 @@ const jwt = require('jsonwebtoken');
 const crypto = require("crypto");
 const nodemailer = require("nodemailer");
 const AdminAuditLog = require("../models/AdminAuditLog");
+const { isInternalTestEmail } = require("../utils/internalTestAccounts");
 
 function getClientIp(req) {
   const xff = req.headers["x-forwarded-for"];
@@ -392,6 +393,7 @@ router.post('/register', async (req, res) => {
     const newUser = await User.create({
       email: emailNorm,
       passwordHash,
+      isInternalTest: isInternalTestEmail(emailNorm),
       displayName: String(displayName || "").trim(),
       dateOfBirth: dobParsed.date,
 
@@ -452,6 +454,7 @@ router.post('/register', async (req, res) => {
         email: newUser.email,
         displayName: newUser.displayName,
         accountType: newUser.accountType,
+        isInternalTest: newUser.isInternalTest === true,
         emailVerifiedAt: null,
       },
     });
@@ -495,6 +498,12 @@ router.post('/login', loginRateLimit, async (req, res) => {
         status: 'error',
         message: 'Invalid credentials',
       });
+    }
+
+    const shouldBeInternalTest = isInternalTestEmail(user.email);
+    if (shouldBeInternalTest && user.isInternalTest !== true) {
+      user.isInternalTest = true;
+      await User.updateOne({ _id: user._id }, { $set: { isInternalTest: true } });
     }
 
     // ------------------------------
@@ -564,6 +573,7 @@ router.post('/login', loginRateLimit, async (req, res) => {
         displayName: user.displayName,
         profileType: user.profileType,
         accountType: user.accountType,
+        isInternalTest: user.isInternalTest === true,
         isVip: user.isVip,
         isCreator: user.isCreator,
         createdAt: user.createdAt,
