@@ -63,6 +63,7 @@ router.get("/event-banner/:userId", auth, async (req, res) => {
     const totalScheduledLive = await Event.countDocuments({
       creatorId: targetUserId,
       status: { $in: ["scheduled", "live"] },
+      contentScope: "NO_HOT",
     });
 
     // prendiamo eventi "candidati" dell'utente:
@@ -71,6 +72,7 @@ router.get("/event-banner/:userId", auth, async (req, res) => {
     const candidates = await Event.find({
       creatorId: targetUserId,
       status: { $in: ["scheduled", "live"] },
+      contentScope: "NO_HOT",
     })
       .sort({ plannedStartTime: 1, startTime: 1 })
       .populate("creatorId", "displayName username avatar avatarUrl")
@@ -126,10 +128,13 @@ router.get("/event-banner/:userId", auth, async (req, res) => {
       startTime: best.startTime || null,
       plannedStartTime: best.plannedStartTime || null,
       title: best.title || null,
+      category: best.category || null,
       contentScope: best.contentScope || null,          // 👈 ADD
       ticketPriceTokens: best.ticketPriceTokens ?? 0, 
       description: best.description || null,   // ✅ ADD
       coverUrl: best.coverUrl || null,
+      coverImage: best.coverImage || null,
+      creatorId: best?.creatorId?._id || null,
       creatorAvatarUrl: best?.creatorId?.avatarUrl || best?.creatorId?.avatar || null,
       creatorDisplayName: best?.creatorId?.displayName || best?.creatorId?.username || null,
       targetUrl: `/live/event/${best._id}`,
