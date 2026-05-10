@@ -23,6 +23,15 @@ function getDailyLimitFromUser(user) {
   return user && user.isVip === true ? 100 : 10;
 }
 
+function parseBool(v) {
+  if (v === true) return true;
+  const s = String(v ?? "").trim().toLowerCase();
+  return s === "true" || s === "1" || s === "yes" || s === "on";
+}
+
+function isEconomyEnabled() {
+  return parseBool(process.env.ECONOMY_ENABLED);
+}
 function getRomeDayKey(date = new Date()) {
   // "en-CA" restituisce YYYY-MM-DD. Timezone coerente con Europe/Rome.
   return date.toLocaleDateString("en-CA", { timeZone: "Europe/Rome" });
@@ -182,40 +191,43 @@ router.post("/:recipientId", auth, async (req, res) => {
       }
     }
 
-    // ✅ Limite giornaliero messaggi (concept attuale: Base 10, VIP 100)
-    const dayKey = getRomeDayKey();
-    const dailyLimit = getDailyLimitFromUser(dbSender);
+    // Daily message limits are economy-controlled. When ECONOMY_ENABLED=false,
+    // Base/VIP/Creator users can send unlimited private messages.
+    if (isEconomyEnabled()) {
+      // ✅ Limite giornaliero messaggi (concept attuale: Base 10, VIP 100)
+      const dayKey = getRomeDayKey();
+      const dailyLimit = getDailyLimitFromUser(dbSender);
 
-    // Incremento atomico del contatore del giorno
-    let counterDoc;
-    try {
-      counterDoc = await MessageDailyCounter.findOneAndUpdate(
-        { userId: dbSender._id, dayKey },
-        { $inc: { count: 1 } },
-        { new: true, upsert: true }
-      ).exec();
-    } catch (e) {
-      // Gestione edge-case race su indice unico (riprova 1 volta)
-      counterDoc = await MessageDailyCounter.findOneAndUpdate(
-        { userId: dbSender._id, dayKey },
-        { $inc: { count: 1 } },
-        { new: true }
-      ).exec();
+      // Incremento atomico del contatore del giorno
+      let counterDoc;
+      try {
+        counterDoc = await MessageDailyCounter.findOneAndUpdate(
+          { userId: dbSender._id, dayKey },
+          { $inc: { count: 1 } },
+          { new: true, upsert: true }
+        ).exec();
+      } catch (e) {
+        // Gestione edge-case race su indice unico (riprova 1 volta)
+        counterDoc = await MessageDailyCounter.findOneAndUpdate(
+          { userId: dbSender._id, dayKey },
+          { $inc: { count: 1 } },
+          { new: true }
+        ).exec();
+      }
+
+      if (counterDoc.count > dailyLimit) {
+        // rollback del contatore (best-effort)
+        await MessageDailyCounter.updateOne(
+          { userId: dbSender._id, dayKey },
+          { $inc: { count: -1 } }
+        ).exec();
+
+        return res.status(403).json({
+          status: "error",
+          message: `Daily message limit reached (${dailyLimit}/day)`,
+        });
+      }
     }
-
-    if (counterDoc.count > dailyLimit) {
-      // rollback del contatore (best-effort)
-      await MessageDailyCounter.updateOne(
-        { userId: dbSender._id, dayKey },
-        { $inc: { count: -1 } }
-      ).exec();
-
-      return res.status(403).json({
-        status: "error",
-        message: `Daily message limit reached (${dailyLimit}/day)`,
-      });
-    }
-
     const newMessage = new Message({
       senderId: sender._id,
       recipientId: dbRecipient._id,
