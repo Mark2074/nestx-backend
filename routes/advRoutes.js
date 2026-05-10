@@ -12,6 +12,10 @@ const LiveRoom = require("../models/LiveRoom");
 const TokenTransaction = require("../models/tokenTransaction");
 const mongoose = require("mongoose");
 const { debitUserTokensBuckets } = require("../services/tokenDebitService");
+const {
+  getInternalTestUserConditions,
+  shouldHideInternalTestUser,
+} = require("../utils/internalTestAccounts");
 
 // --- ADV rules ---
 const ADV_FREE_PER_DAY = 2;
@@ -57,7 +61,7 @@ async function getNonPublicCreatorIds({ isAdminViewer = false } = {}) {
   const docs = await User.find({
     $or: [
       { accountType: "admin" },
-      { isInternalTest: true },
+      ...getInternalTestUserConditions(),
       { isBanned: true },
       { isDeleted: true },
       { deletedAt: { $ne: null } },
@@ -665,7 +669,7 @@ router.get('/profile/active/:userId', auth, async (req, res) => {
     const isAdminViewer = String(req.user?.accountType || "").toLowerCase() === "admin";
 
     const targetCreator = await User.findById(userId)
-      .select("_id accountType isInternalTest isBanned isDeleted deletedAt")
+      .select("_id email accountType isInternalTest isBanned isDeleted deletedAt")
       .lean();
 
     if (!targetCreator) {
@@ -676,7 +680,7 @@ router.get('/profile/active/:userId', auth, async (req, res) => {
       !isAdminViewer &&
       (
         targetCreator?.accountType === "admin" ||
-        targetCreator?.isInternalTest === true ||
+        shouldHideInternalTestUser(targetCreator, req.user) ||
         targetCreator?.isBanned === true ||
         isUserDeletedLike(targetCreator)
       )
@@ -1188,7 +1192,7 @@ router.post('/:id/click', auth, async (req, res) => {
 
     const isAdminViewer = String(req.user?.accountType || "").toLowerCase() === "admin";
     const creator = await User.findById(adv.creatorId)
-      .select("_id accountType isInternalTest isBanned isDeleted deletedAt")
+      .select("_id email accountType isInternalTest isBanned isDeleted deletedAt")
       .lean();
 
     if (
@@ -1197,7 +1201,7 @@ router.post('/:id/click', auth, async (req, res) => {
         !isAdminViewer &&
         (
           creator?.accountType === "admin" ||
-          creator?.isInternalTest === true ||
+          shouldHideInternalTestUser(creator, req.user) ||
           creator?.isBanned === true ||
           isUserDeletedLike(creator)
         )
@@ -1207,6 +1211,25 @@ router.post('/:id/click', auth, async (req, res) => {
         status: 'error',
         message: 'ADV not found',
       });
+    }
+
+    if (!isAdminViewer && adv.targetType === "event" && adv.targetId) {
+      const targetEvent = await Event.findById(adv.targetId)
+        .select("_id creatorId")
+        .lean();
+
+      const targetCreator = targetEvent?.creatorId
+        ? await User.findById(targetEvent.creatorId)
+            .select("_id email isInternalTest accountType isBanned isDeleted deletedAt")
+            .lean()
+        : null;
+
+      if (!targetEvent || shouldHideInternalTestUser(targetCreator, req.user)) {
+        return res.status(404).json({
+          status: 'error',
+          message: 'ADV not found',
+        });
+      }
     }
 
     await Adv.updateOne({ _id: adv._id }, { $inc: { clicks: 1 } });

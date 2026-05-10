@@ -387,7 +387,7 @@ router.get("/public/:id", auth, async (req, res) => {
     // Dati base utente (profilo pubblico)
     const user = await User.findById(targetUserId)
       .select(
-        "_id displayName profileType area bio avatar coverImage interests language isVip verifiedUser isCreator creatorEnabled payoutProvider payoutEnabled payoutStatus createdAt verificationStatus verificationPublicVideoUrl isPrivate accountType status accountStatus isDeleted deletedAt deletionStatus isInternalTest"
+        "_id email displayName profileType area bio avatar coverImage interests language isVip verifiedUser isCreator creatorEnabled payoutProvider payoutEnabled payoutStatus createdAt verificationStatus verificationPublicVideoUrl isPrivate accountType status accountStatus isDeleted deletedAt deletionStatus isInternalTest"
       )
       .lean()
       .exec();

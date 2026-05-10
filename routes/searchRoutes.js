@@ -10,6 +10,7 @@ const Follow = require("../models/Follow");
 
 const auth = require("../middleware/authMiddleware");
 const { getBlockedUserIds } = require("../utils/blockUtils");
+const { getInternalTestUserConditions } = require("../utils/internalTestAccounts");
 const crypto = require("crypto");
 const SensitiveDictionaryEntry = require("../models/SensitiveDictionaryEntry");
 const ProhibitedSearchLog = require("../models/ProhibitedSearchLog");
@@ -79,7 +80,7 @@ async function buildExcludedUserIds(meId, options = {}) {
         .select("_id")
         .lean(),
       User.find({
-        isInternalTest: true,
+        $or: getInternalTestUserConditions(),
       })
         .select("_id")
         .lean(),
@@ -276,7 +277,7 @@ router.get("/search", auth, async (req, res) => {
     if (!isAdmin) {
       const [bannedUsers, internalTestUsers] = await Promise.all([
         User.find({ isBanned: true }).select("_id").lean(),
-        User.find({ isInternalTest: true }).select("_id").lean(),
+        User.find({ $or: getInternalTestUserConditions() }).select("_id").lean(),
       ]);
       bannedIds = bannedUsers.map((u) => String(u._id));
       internalTestIds = internalTestUsers.map((u) => String(u._id));

@@ -27,7 +27,10 @@ const {
 const { detectContentSafety } = require("../utils/contentSafety");
 const { analyzeTextModeration } = require("../services/moderationService");
 const Report = require("../models/Report");
-const { shouldHideInternalTestUser } = require("../utils/internalTestAccounts");
+const {
+  getInternalTestUserConditions,
+  shouldHideInternalTestUser,
+} = require("../utils/internalTestAccounts");
 
 const { execFile } = require("child_process");
 const ffprobePath = require("ffprobe-static")?.path;
@@ -352,7 +355,7 @@ async function getNonPublicAuthorIds({ isAdminViewer = false } = {}) {
   const docs = await User.find({
     $or: [
       { accountType: "admin" },
-      { isInternalTest: true },
+      ...getInternalTestUserConditions(),
       { isBanned: true },
       { isDeleted: true },
       { deletedAt: { $ne: null } },
@@ -410,7 +413,7 @@ async function guardPostAccessForComments({ meId, post, viewerAccountType = "" }
   const isAdminViewer = String(viewerAccountType || "").toLowerCase() === "admin";
 
   const author = await User.findById(authorIdValue)
-    .select("accountType isPrivate isInternalTest isBanned isDeleted deletedAt")
+    .select("accountType email isPrivate isInternalTest isBanned isDeleted deletedAt")
     .lean();
 
   if (!author) {
@@ -422,8 +425,17 @@ async function guardPostAccessForComments({ meId, post, viewerAccountType = "" }
     return { ok: false, status: 404, code: "POST_NOT_FOUND", message: "Post not found" };
   }
 
+  const isOwner = meIdStr === authorIdStr;
+
   // internal-test/banned/deleted invisible to normal users
-  if (!isAdminViewer && (author?.isInternalTest === true || author?.isBanned === true || isUserDeletedLike(author))) {
+  if (
+    !isAdminViewer &&
+    (
+      shouldHideInternalTestUser(author, { accountType: viewerAccountType }, isOwner ? meId : null) ||
+      author?.isBanned === true ||
+      isUserDeletedLike(author)
+    )
+  ) {
     return { ok: false, status: 404, code: "POST_NOT_FOUND", message: "Post not found" };
   }
 
@@ -440,8 +452,6 @@ async function guardPostAccessForComments({ meId, post, viewerAccountType = "" }
   if (blocked) {
     return { ok: false, status: 403, code: "CONTENT_NOT_AVAILABLE", message: "Content not available" };
   }
-
-  const isOwner = meIdStr === authorIdStr;
 
   // admin moderation bypass
   if (isAdminViewer) {
@@ -973,7 +983,7 @@ router.get("/user/:userId", auth, async (req, res) => {
     // - owner
     // - follower accepted
     const targetUser = await User.findById(userId)
-      .select("_id isPrivate accountType isInternalTest isBanned isDeleted deletedAt")
+      .select("_id email isPrivate accountType isInternalTest isBanned isDeleted deletedAt")
       .lean();
     if (!targetUser) {
       return res.status(404).json({ status: "error", message: "User not found" });

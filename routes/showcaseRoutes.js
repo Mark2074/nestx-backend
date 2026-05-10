@@ -11,6 +11,10 @@ const TokenTransaction = require("../models/tokenTransaction");
 const mongoose = require("mongoose");
 const crypto = require("crypto");
 const { reserveUserTokensBuckets } = require("../services/tokenDebitService");
+const {
+  getInternalTestUserConditions,
+  shouldHideInternalTestUser,
+} = require("../utils/internalTestAccounts");
 
 // --- VETRINA rules ---
 const VETRINA_FREE_ACTIVE = 2;
@@ -60,7 +64,7 @@ async function getNonPublicCreatorIds({ isAdminViewer = false } = {}) {
   const docs = await User.find({
     $or: [
       { accountType: "admin" },
-      { isInternalTest: true },
+      ...getInternalTestUserConditions(),
       { isBanned: true },
       { isDeleted: true },
       { deletedAt: { $ne: null } },
@@ -522,7 +526,7 @@ router.post("/:id/click", auth, async (req, res) => {
     const isAdminViewer = String(req.user?.accountType || "").toLowerCase() === "admin";
 
     const creator = await User.findById(item.creatorId)
-      .select("_id accountType isInternalTest isBanned isDeleted deletedAt")
+      .select("_id email accountType isInternalTest isBanned isDeleted deletedAt")
       .lean();
 
     if (!creator) {
@@ -533,7 +537,7 @@ router.post("/:id/click", auth, async (req, res) => {
       !isAdminViewer &&
       (
         creator?.accountType === "admin" ||
-        creator?.isInternalTest === true ||
+        shouldHideInternalTestUser(creator, req.user) ||
         creator?.isBanned === true ||
         isUserDeletedLike(creator)
       )

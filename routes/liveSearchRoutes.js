@@ -9,6 +9,7 @@ const User = require("../models/user");
 const Event = require("../models/event");
 const Follow = require("../models/Follow");
 const { getBlockedUserIds } = require("../utils/blockUtils");
+const { getInternalTestUserConditions } = require("../utils/internalTestAccounts");
 
 /**
  * Helpers
@@ -56,7 +57,7 @@ async function buildExcludedUserIds(meId, options = {}) {
       })
         .select("_id")
         .lean(),
-      User.find({ isInternalTest: true })
+      User.find({ $or: getInternalTestUserConditions() })
         .select("_id")
         .lean(),
     ]);

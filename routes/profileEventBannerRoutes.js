@@ -31,7 +31,7 @@ router.get("/event-banner/:userId", auth, async (req, res) => {
     }
 
     // ✅ PRIVACY GUARD: banner visibile solo a owner o follower accepted se profilo privato
-    const targetUser = await User.findById(userId).select("_id isPrivate isInternalTest").lean();
+    const targetUser = await User.findById(userId).select("_id email isPrivate isInternalTest").lean();
     if (!targetUser) {
       return res.status(404).json({ status: "error", message: "User not found" });
     }

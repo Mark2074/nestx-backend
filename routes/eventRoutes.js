@@ -23,7 +23,11 @@ const Adv = require("../models/adv");
 const { detectContentSafety } = require("../utils/contentSafety");
 const { resetRuntimeForScope } = require("../services/liveRuntimeService");
 const { chargeUserToCreator } = require("../services/livePaymentService");
-const { isAdminViewer, shouldHideInternalTestUser } = require("../utils/internalTestAccounts");
+const {
+  getInternalTestUserConditions,
+  isAdminViewer,
+  shouldHideInternalTestUser,
+} = require("../utils/internalTestAccounts");
 
 router.get('/ping-events', (req, res) => {
   res.json({ status: 'ok', source: 'eventRoutes' });
@@ -3114,7 +3118,7 @@ router.get("/feed", auth, featureGuard("live"), async (req, res) => {
     const blockedUserIds = await getBlockedUserIds(req.user._id);
     const internalTestCreatorIds = isAdminViewer(req.user)
       ? []
-      : await User.find({ isInternalTest: true }).select("_id").lean();
+      : await User.find({ $or: getInternalTestUserConditions() }).select("_id").lean();
 
     const query = {
       visibility: { $ne: "unlisted" },
