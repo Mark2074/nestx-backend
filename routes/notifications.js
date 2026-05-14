@@ -4,8 +4,70 @@ const mongoose = require("mongoose");
 
 const auth = require("../middleware/authMiddleware");
 const Notification = require("../models/notification");
+const Follow = require("../models/Follow");
 
 const router = express.Router();
+
+function getActorId(notification) {
+  const actor = notification?.actorId;
+  if (!actor) return null;
+  if (typeof actor === "string") return actor;
+  return actor?._id || actor?.id || null;
+}
+
+async function reconcileFollowRequestNotifications(items, userId) {
+  const nextItems = await Promise.all(
+    items.map(async (item) => {
+      const type = String(item?.type || "").trim().toUpperCase();
+      if (type !== "SOCIAL_FOLLOW_REQUEST") return item;
+
+      const data = item?.data || {};
+      if (data.followRequestAccepted === true || data.followRequestCancelled === true || data.actionable === false) {
+        return item;
+      }
+
+      const followerId = getActorId(item);
+      if (!followerId) return item;
+
+      const pending = await Follow.exists({
+        followerId,
+        followingId: userId,
+        status: "pending",
+      });
+
+      if (pending) return item;
+
+      const now = new Date();
+      const patch = {
+        message: "Follow request cancelled",
+        isRead: true,
+        readAt: now,
+        data: {
+          ...data,
+          followRequestCancelled: true,
+          followRequestAccepted: false,
+          actionable: false,
+        },
+      };
+
+      await Notification.updateOne(
+        { _id: item._id, userId },
+        {
+          $set: {
+            message: patch.message,
+            isRead: patch.isRead,
+            readAt: patch.readAt,
+            data: patch.data,
+          },
+        }
+      );
+
+      return { ...item, ...patch };
+    })
+  );
+
+  return nextItems;
+}
 
 /**
  * GET /api/notifications
@@ -26,11 +88,13 @@ router.get("/", auth, async (req, res) => {
     if (unreadOnly) q.isRead = false;
     if (cursor && !Number.isNaN(cursor.getTime())) q.createdAt = { $lt: cursor };
 
-    const items = await Notification.find(q)
+    const rawItems = await Notification.find(q)
       .sort({ createdAt: -1 })
       .populate("actorId", "username displayName avatar")
       .limit(limit)
       .lean();
+
+    const items = await reconcileFollowRequestNotifications(rawItems, me);
 
     const nextCursor = items.length ? items[items.length - 1].createdAt.toISOString() : null;
 
