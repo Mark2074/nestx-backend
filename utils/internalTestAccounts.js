@@ -51,21 +51,50 @@ function getInternalTestUserConditions() {
   return conditions;
 }
 
+function isInternalTestUser(user) {
+  return user?.isInternalTest === true || isInternalTestEmail(user?.email);
+}
+
 function isAdminViewer(user) {
   return String(user?.accountType || "").toLowerCase() === "admin";
 }
 
+function getOppositeEnvironmentUserQuery(viewerUser) {
+  if (isAdminViewer(viewerUser)) return null;
+
+  const internalTestConditions = getInternalTestUserConditions();
+  if (isInternalTestUser(viewerUser)) {
+    return { $nor: internalTestConditions };
+  }
+
+  return { $or: internalTestConditions };
+}
+
+function getSameEnvironmentUserQuery(viewerUser) {
+  if (isAdminViewer(viewerUser)) return null;
+
+  const internalTestConditions = getInternalTestUserConditions();
+  if (isInternalTestUser(viewerUser)) {
+    return { $or: internalTestConditions };
+  }
+
+  return { $nor: internalTestConditions };
+}
+
 function shouldHideInternalTestUser(targetUser, viewerUser, ownerId = null) {
-  if (!targetUser?.isInternalTest && !isInternalTestEmail(targetUser?.email)) return false;
   if (isAdminViewer(viewerUser)) return false;
   if (ownerId && String(ownerId) === String(targetUser?._id || targetUser)) return false;
-  return true;
+
+  return isInternalTestUser(targetUser) !== isInternalTestUser(viewerUser);
 }
 
 module.exports = {
   normalizeGmailAliasEmail,
   isInternalTestEmail,
+  isInternalTestUser,
   getInternalTestUserConditions,
+  getOppositeEnvironmentUserQuery,
+  getSameEnvironmentUserQuery,
   isAdminViewer,
   shouldHideInternalTestUser,
 };

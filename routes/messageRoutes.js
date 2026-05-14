@@ -9,6 +9,10 @@ const MessageDailyCounter = require("../models/MessageDailyCounter");
 const { isUserBlockedEitherSide } = require("../utils/blockUtils");
 const Follow = require("../models/Follow");
 const { detectContentSafety } = require("../utils/contentSafety");
+const {
+  getSameEnvironmentUserQuery,
+  shouldHideInternalTestUser,
+} = require("../utils/internalTestAccounts");
 
 /**
  * Utils
@@ -146,7 +150,7 @@ router.post("/:recipientId", auth, async (req, res) => {
     const dbSender = await User.findById(sender._id).exec();
     const dbRecipient = await User.findById(recipientId).exec();
 
-    if (!dbRecipient) {
+    if (!dbRecipient || shouldHideInternalTestUser(dbRecipient, req.user)) {
       return res.status(404).json({
         status: "error",
         message: "Recipient not found",
@@ -276,6 +280,11 @@ router.get("/conversations", auth, async (req, res) => {
     }
 
     const userId = user._id;
+    const sameEnvironmentQuery = getSameEnvironmentUserQuery(user);
+    const visibleUsers = sameEnvironmentQuery
+      ? await User.find({ $and: [sameEnvironmentQuery] }).select("_id").lean()
+      : [];
+    const visibleUserIdSet = new Set(visibleUsers.map((u) => String(u._id)));
 
     // Recuperiamo tutte le conversazioni dove l'utente è coinvolto
     const messages = await Message.find({
@@ -289,6 +298,12 @@ router.get("/conversations", auth, async (req, res) => {
     const lastByConversation = new Map();
 
     for (const msg of messages) {
+      const otherId =
+        String(msg.senderId) === String(userId)
+          ? String(msg.recipientId)
+          : String(msg.senderId);
+      if (sameEnvironmentQuery && !visibleUserIdSet.has(otherId)) continue;
+
       if (!lastByConversation.has(msg.conversationKey)) {
         lastByConversation.set(msg.conversationKey, msg);
       }
@@ -341,6 +356,16 @@ router.get("/conversation/:otherUserId", auth, async (req, res) => {
       return res.status(400).json({
         status: "error",
         message: "Recipient ID missing",
+      });
+    }
+
+    const otherUser = await User.findById(otherUserId)
+      .select("_id email isInternalTest")
+      .lean();
+    if (!otherUser || shouldHideInternalTestUser(otherUser, user)) {
+      return res.status(404).json({
+        status: "error",
+        message: "Recipient not found",
       });
     }
 

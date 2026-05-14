@@ -10,7 +10,7 @@ const Follow = require("../models/Follow");
 
 const auth = require("../middleware/authMiddleware");
 const { getBlockedUserIds } = require("../utils/blockUtils");
-const { getInternalTestUserConditions } = require("../utils/internalTestAccounts");
+const { getOppositeEnvironmentUserQuery } = require("../utils/internalTestAccounts");
 const crypto = require("crypto");
 const SensitiveDictionaryEntry = require("../models/SensitiveDictionaryEntry");
 const ProhibitedSearchLog = require("../models/ProhibitedSearchLog");
@@ -64,9 +64,10 @@ async function buildExcludedUserIds(meId, options = {}) {
 
   let privateNotAllowed = [];
   let bannedIds = [];
-  let internalTestIds = [];
+  let environmentExcludedIds = [];
 
   if (!isAdmin) {
+    const environmentQuery = getOppositeEnvironmentUserQuery(options.viewerUser);
     const [privateNotAllowedDocs, bannedDocs, internalTestDocs] = await Promise.all([
       User.find({
         isPrivate: true,
@@ -79,19 +80,17 @@ async function buildExcludedUserIds(meId, options = {}) {
       })
         .select("_id")
         .lean(),
-      User.find({
-        $or: getInternalTestUserConditions(),
-      })
-        .select("_id")
-        .lean(),
+      environmentQuery
+        ? User.find(environmentQuery).select("_id").lean()
+        : Promise.resolve([]),
     ]);
 
     privateNotAllowed = privateNotAllowedDocs.map((u) => String(u._id));
     bannedIds = bannedDocs.map((u) => String(u._id));
-    internalTestIds = internalTestDocs.map((u) => String(u._id));
+    environmentExcludedIds = internalTestDocs.map((u) => String(u._id));
   }
 
-  const excluded = new Set([...blockedSet, ...privateNotAllowed, ...bannedIds, ...internalTestIds]);
+  const excluded = new Set([...blockedSet, ...privateNotAllowed, ...bannedIds, ...environmentExcludedIds]);
   excluded.delete(String(meId)); // io posso sempre vedermi
   return Array.from(excluded);
 }
@@ -266,32 +265,35 @@ router.get("/search", auth, async (req, res) => {
     const blockedIdsRaw = await getBlockedUserIds(me._id);
     const blockedIds = Array.isArray(blockedIdsRaw) ? blockedIdsRaw.map((id) => String(id)) : [];
 
-    const excludedUserIds = await buildExcludedUserIds(me._id, { isAdmin });
+    const excludedUserIds = await buildExcludedUserIds(me._id, { isAdmin, viewerUser: me });
     const acceptedFollowingObjIds = await getAcceptedFollowingObjIds(me._id);
 
     const adminUsers = await User.find({ accountType: "admin" }).select("_id").lean();
     const adminIds = adminUsers.map((u) => String(u._id));
 
     let bannedIds = [];
-    let internalTestIds = [];
+    let environmentExcludedIds = [];
     if (!isAdmin) {
+      const environmentQuery = getOppositeEnvironmentUserQuery(me);
       const [bannedUsers, internalTestUsers] = await Promise.all([
         User.find({ isBanned: true }).select("_id").lean(),
-        User.find({ $or: getInternalTestUserConditions() }).select("_id").lean(),
+        environmentQuery
+          ? User.find(environmentQuery).select("_id").lean()
+          : Promise.resolve([]),
       ]);
       bannedIds = bannedUsers.map((u) => String(u._id));
-      internalTestIds = internalTestUsers.map((u) => String(u._id));
+      environmentExcludedIds = internalTestUsers.map((u) => String(u._id));
     }
 
     // EXCLUSIONS:
     // - USERS: blocked + admin + banned
     // - POSTS/EVENTS: blocked + privateNotAllowed + admin + banned
     const finalExcludedUserIdsUsers = Array.from(
-      new Set([...blockedIds, ...adminIds, ...bannedIds, ...internalTestIds])
+      new Set([...blockedIds, ...adminIds, ...bannedIds, ...environmentExcludedIds])
     );
 
     const finalExcludedUserIdsPostsEvents = Array.from(
-      new Set([...excludedUserIds.map(String), ...adminIds, ...bannedIds, ...internalTestIds])
+      new Set([...excludedUserIds.map(String), ...adminIds, ...bannedIds, ...environmentExcludedIds])
     );
 
     const finalExcludedObjIdsUsers = finalExcludedUserIdsUsers

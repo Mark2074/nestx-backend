@@ -12,7 +12,7 @@ const mongoose = require("mongoose");
 const crypto = require("crypto");
 const { reserveUserTokensBuckets } = require("../services/tokenDebitService");
 const {
-  getInternalTestUserConditions,
+  getOppositeEnvironmentUserQuery,
   shouldHideInternalTestUser,
 } = require("../utils/internalTestAccounts");
 
@@ -58,16 +58,18 @@ function isUserDeletedLike(user) {
   return user?.isDeleted === true || !!user?.deletedAt;
 }
 
-async function getNonPublicCreatorIds({ isAdminViewer = false } = {}) {
+async function getNonPublicCreatorIds({ isAdminViewer = false, viewerUser = null } = {}) {
   if (isAdminViewer) return [];
+
+  const environmentQuery = getOppositeEnvironmentUserQuery(viewerUser);
 
   const docs = await User.find({
     $or: [
       { accountType: "admin" },
-      ...getInternalTestUserConditions(),
       { isBanned: true },
       { isDeleted: true },
       { deletedAt: { $ne: null } },
+      ...(environmentQuery ? [environmentQuery] : []),
     ],
   })
     .select("_id")
@@ -385,7 +387,7 @@ router.get("/serve", auth, async (req, res) => {
     const meId = String(req.user?._id || req.user?.id || "");
     const blockedIds = meId ? await getBlockedUserIds(meId) : [];
     const isAdminViewer = String(req.user?.accountType || "").toLowerCase() === "admin";
-    const hiddenCreatorIds = await getNonPublicCreatorIds({ isAdminViewer });
+    const hiddenCreatorIds = await getNonPublicCreatorIds({ isAdminViewer, viewerUser: req.user });
 
     const raw = await ShowcaseItem.findOne({
       isActive: true,
@@ -450,7 +452,7 @@ router.get("/all", auth, async (req, res) => {
     const meId = String(req.user?._id || req.user?.id || "");
     const blockedIds = meId ? await getBlockedUserIds(meId) : [];
     const isAdminViewer = String(req.user?.accountType || "").toLowerCase() === "admin";
-    const hiddenCreatorIds = await getNonPublicCreatorIds({ isAdminViewer });
+    const hiddenCreatorIds = await getNonPublicCreatorIds({ isAdminViewer, viewerUser: req.user });
 
     const q = {
       isActive: true,

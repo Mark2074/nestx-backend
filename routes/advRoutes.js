@@ -13,7 +13,7 @@ const TokenTransaction = require("../models/tokenTransaction");
 const mongoose = require("mongoose");
 const { debitUserTokensBuckets } = require("../services/tokenDebitService");
 const {
-  getInternalTestUserConditions,
+  getOppositeEnvironmentUserQuery,
   shouldHideInternalTestUser,
 } = require("../utils/internalTestAccounts");
 
@@ -55,16 +55,18 @@ function isUserDeletedLike(user) {
   return user?.isDeleted === true || !!user?.deletedAt;
 }
 
-async function getNonPublicCreatorIds({ isAdminViewer = false } = {}) {
+async function getNonPublicCreatorIds({ isAdminViewer = false, viewerUser = null } = {}) {
   if (isAdminViewer) return [];
+
+  const environmentQuery = getOppositeEnvironmentUserQuery(viewerUser);
 
   const docs = await User.find({
     $or: [
       { accountType: "admin" },
-      ...getInternalTestUserConditions(),
       { isBanned: true },
       { isDeleted: true },
       { deletedAt: { $ne: null } },
+      ...(environmentQuery ? [environmentQuery] : []),
     ],
   })
     .select("_id")
@@ -752,7 +754,7 @@ router.get('/serve', auth, async (req, res) => {
 
     const blockedIds = await getBlockedUserIds(String(userId));
     const isAdminViewer = String(dbUser?.accountType || "").toLowerCase() === "admin";
-    const hiddenCreatorIds = await getNonPublicCreatorIds({ isAdminViewer });
+    const hiddenCreatorIds = await getNonPublicCreatorIds({ isAdminViewer, viewerUser: req.user });
 
     // 🔹 content context (standard | neutral | live_events)
     const ctx = dbUser?.appSettings?.contentContext || DEFAULT_CONTEXT;
@@ -978,7 +980,7 @@ router.get('/serve-four', auth, async (req, res) => {
 
     const blockedIds = await getBlockedUserIds(String(userId));
     const isAdminViewer = String(dbUser?.accountType || "").toLowerCase() === "admin";
-    const hiddenCreatorIds = await getNonPublicCreatorIds({ isAdminViewer });
+    const hiddenCreatorIds = await getNonPublicCreatorIds({ isAdminViewer, viewerUser: req.user });
 
     const ctx = dbUser?.appSettings?.contentContext || DEFAULT_CONTEXT;
 

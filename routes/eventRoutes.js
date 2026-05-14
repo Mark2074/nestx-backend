@@ -24,7 +24,7 @@ const { detectContentSafety } = require("../utils/contentSafety");
 const { resetRuntimeForScope } = require("../services/liveRuntimeService");
 const { chargeUserToCreator } = require("../services/livePaymentService");
 const {
-  getInternalTestUserConditions,
+  getOppositeEnvironmentUserQuery,
   isAdminViewer,
   shouldHideInternalTestUser,
 } = require("../utils/internalTestAccounts");
@@ -3116,9 +3116,10 @@ router.get("/feed", auth, featureGuard("live"), async (req, res) => {
     const mutedUserIds = await getMutedUserIds(req.user._id);
     // 1b) prendo gli utenti bloccati (both sides)
     const blockedUserIds = await getBlockedUserIds(req.user._id);
-    const internalTestCreatorIds = isAdminViewer(req.user)
+    const environmentQuery = getOppositeEnvironmentUserQuery(req.user);
+    const environmentExcludedCreatorIds = isAdminViewer(req.user) || !environmentQuery
       ? []
-      : await User.find({ $or: getInternalTestUserConditions() }).select("_id").lean();
+      : await User.find(environmentQuery).select("_id").lean();
 
     const query = {
       visibility: { $ne: "unlisted" },
@@ -3126,7 +3127,7 @@ router.get("/feed", auth, featureGuard("live"), async (req, res) => {
         $nin: [
           ...mutedUserIds,
           ...blockedUserIds,
-          ...internalTestCreatorIds.map((u) => u._id),
+          ...environmentExcludedCreatorIds.map((u) => u._id),
         ],
       },
     };

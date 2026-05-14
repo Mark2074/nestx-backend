@@ -5,6 +5,11 @@ const mongoose = require("mongoose");
 const auth = require("../middleware/authMiddleware");
 const Notification = require("../models/notification");
 const Follow = require("../models/Follow");
+const User = require("../models/user");
+const {
+  getOppositeEnvironmentUserQuery,
+  shouldHideInternalTestUser,
+} = require("../utils/internalTestAccounts");
 
 const router = express.Router();
 
@@ -69,6 +74,14 @@ async function reconcileFollowRequestNotifications(items, userId) {
   return nextItems;
 }
 
+async function getEnvironmentExcludedActorIds(viewerUser) {
+  const environmentQuery = getOppositeEnvironmentUserQuery(viewerUser);
+  if (!environmentQuery) return [];
+
+  const users = await User.find(environmentQuery).select("_id").lean();
+  return users.map((u) => u._id);
+}
+
 /**
  * GET /api/notifications
  * query: ?limit=20&cursor=<ISO date>&unreadOnly=1
@@ -84,17 +97,30 @@ router.get("/", auth, async (req, res) => {
 
     const cursor = req.query.cursor ? new Date(String(req.query.cursor)) : null;
 
+    const excludedActorIds = await getEnvironmentExcludedActorIds(req.user);
     const q = { userId: me };
     if (unreadOnly) q.isRead = false;
     if (cursor && !Number.isNaN(cursor.getTime())) q.createdAt = { $lt: cursor };
+    if (excludedActorIds.length) {
+      q.$or = [
+        { actorId: { $exists: false } },
+        { actorId: null },
+        { actorId: { $nin: excludedActorIds } },
+      ];
+    }
 
     const rawItems = await Notification.find(q)
       .sort({ createdAt: -1 })
-      .populate("actorId", "username displayName avatar")
+      .populate("actorId", "username displayName avatar email isInternalTest")
       .limit(limit)
       .lean();
 
-    const items = await reconcileFollowRequestNotifications(rawItems, me);
+    const environmentItems = rawItems.filter((item) => {
+      if (!item?.actorId || typeof item.actorId !== "object") return true;
+      return !shouldHideInternalTestUser(item.actorId, req.user);
+    });
+
+    const items = await reconcileFollowRequestNotifications(environmentItems, me);
 
     const nextCursor = items.length ? items[items.length - 1].createdAt.toISOString() : null;
 
@@ -113,7 +139,17 @@ router.get("/unread-count", auth, async (req, res) => {
     const me = req.user?._id;
     if (!me) return res.status(401).json({ status: "error", message: "Unauthenticated user" });
 
-    const count = await Notification.countDocuments({ userId: me, isRead: false });
+    const excludedActorIds = await getEnvironmentExcludedActorIds(req.user);
+    const q = { userId: me, isRead: false };
+    if (excludedActorIds.length) {
+      q.$or = [
+        { actorId: { $exists: false } },
+        { actorId: null },
+        { actorId: { $nin: excludedActorIds } },
+      ];
+    }
+
+    const count = await Notification.countDocuments(q);
     return res.json({ status: "success", count });
   } catch (err) {
     console.error("GET /api/notifications/unread-count error:", err);
@@ -139,7 +175,7 @@ router.patch("/:id/read", auth, async (req, res) => {
       { $set: { isRead: true, readAt: new Date() } },
       { new: true }
     )
-      .populate("actorId", "username displayName avatar")
+      .populate("actorId", "username displayName avatar email isInternalTest")
       .lean()
       .exec();
 

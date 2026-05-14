@@ -28,7 +28,8 @@ const { detectContentSafety } = require("../utils/contentSafety");
 const { analyzeTextModeration } = require("../services/moderationService");
 const Report = require("../models/Report");
 const {
-  getInternalTestUserConditions,
+  getOppositeEnvironmentUserQuery,
+  getSameEnvironmentUserQuery,
   shouldHideInternalTestUser,
 } = require("../utils/internalTestAccounts");
 
@@ -349,16 +350,18 @@ function isUserDeletedLike(user) {
   return user?.isDeleted === true || !!user?.deletedAt;
 }
 
-async function getNonPublicAuthorIds({ isAdminViewer = false } = {}) {
+async function getNonPublicAuthorIds({ isAdminViewer = false, viewerUser = null } = {}) {
   if (isAdminViewer) return [];
+
+  const environmentQuery = getOppositeEnvironmentUserQuery(viewerUser);
 
   const docs = await User.find({
     $or: [
       { accountType: "admin" },
-      ...getInternalTestUserConditions(),
       { isBanned: true },
       { isDeleted: true },
       { deletedAt: { $ne: null } },
+      ...(environmentQuery ? [environmentQuery] : []),
     ],
   })
     .select("_id")
@@ -406,7 +409,7 @@ function isEventVisibleNow(ev, nowMs) {
   return false;
 }
 
-async function guardPostAccessForComments({ meId, post, viewerAccountType = "" }) {
+async function guardPostAccessForComments({ meId, post, viewerUser = null, viewerAccountType = "" }) {
   const meIdStr = String(meId);
   const authorIdValue = post?.authorId?._id || post?.authorId;
   const authorIdStr = String(authorIdValue || "");
@@ -431,7 +434,7 @@ async function guardPostAccessForComments({ meId, post, viewerAccountType = "" }
   if (
     !isAdminViewer &&
     (
-      shouldHideInternalTestUser(author, { accountType: viewerAccountType }, isOwner ? meId : null) ||
+      shouldHideInternalTestUser(author, viewerUser || { accountType: viewerAccountType }, isOwner ? meId : null) ||
       author?.isBanned === true ||
       isUserDeletedLike(author)
     )
@@ -822,6 +825,7 @@ router.post("/:id/poll/vote", auth, async (req, res) => {
     const access = await guardPostAccessForComments({
       meId,
       post,
+      viewerUser: req.user,
       viewerAccountType: req.user?.accountType,
     });
     if (!access.ok) {
@@ -1107,7 +1111,7 @@ router.get("/feed/fedbase", auth, async (req, res) => {
     }
     const blockedUserIds = Array.from(blockedSet);
     const isAdminViewer = String(req.user?.accountType || "").toLowerCase() === "admin";
-    const hiddenAuthorIds = await getNonPublicAuthorIds({ isAdminViewer });
+    const hiddenAuthorIds = await getNonPublicAuthorIds({ isAdminViewer, viewerUser: req.user });
 
     // 2) query base + filtro mute + filtro block
     const baseQuery = {
@@ -1177,7 +1181,7 @@ router.get('/feed/fedvip', auth, async (req, res) => {
     }
     const blockedUserIds = Array.from(blockedSet);
     const isAdminViewer = String(req.user?.accountType || "").toLowerCase() === "admin";
-    const hiddenAuthorIds = await getNonPublicAuthorIds({ isAdminViewer });
+    const hiddenAuthorIds = await getNonPublicAuthorIds({ isAdminViewer, viewerUser: req.user });
 
     const query = {
       visibility: "public",
@@ -1276,7 +1280,7 @@ router.get("/feed/fed", auth, async (req, res) => {
       .filter((f) => !f.status || f.status === "accepted")
       .map((f) => f.followingId);
 
-    const hiddenAuthorIds = await getNonPublicAuthorIds({ isAdminViewer });
+    const hiddenAuthorIds = await getNonPublicAuthorIds({ isAdminViewer, viewerUser: req.user });
 
     // autori privati che NON seguo
     let privateExcludedIds = [];
@@ -1423,13 +1427,18 @@ router.get('/feed/following', auth, async (req, res) => {
         let followingIds = rawFollowingIds;
 
         if (!isAdminViewer) {
-          const visibleUsers = await User.find({
+          const environmentQuery = getSameEnvironmentUserQuery(req.user);
+          const visibilityQuery = {
             _id: { $in: rawFollowingIds },
             accountType: { $ne: "admin" },
-            isInternalTest: { $ne: true },
             isBanned: { $ne: true },
             isDeleted: { $ne: true },
             deletedAt: null,
+            ...(environmentQuery ? { $and: [environmentQuery] } : {}),
+          };
+
+          const visibleUsers = await User.find({
+            ...visibilityQuery,
           })
             .select("_id")
             .lean();
@@ -1554,13 +1563,18 @@ router.get("/feed/following-mixed", auth, async (req, res) => {
     let safeFollowingIdsNoAdmin = safeFollowingIds;
 
     if (!isAdminViewer) {
-      const visibleUsers = await User.find({
+      const environmentQuery = getSameEnvironmentUserQuery(req.user);
+      const visibilityQuery = {
         _id: { $in: safeFollowingIds.map((id) => new mongoose.Types.ObjectId(String(id))) },
         accountType: { $ne: "admin" },
-        isInternalTest: { $ne: true },
         isBanned: { $ne: true },
         isDeleted: { $ne: true },
         deletedAt: null,
+        ...(environmentQuery ? { $and: [environmentQuery] } : {}),
+      };
+
+      const visibleUsers = await User.find({
+        ...visibilityQuery,
       })
         .select("_id")
         .lean();
@@ -1772,6 +1786,7 @@ router.post("/:id/likes", auth, async (req, res) => {
     const access = await guardPostAccessForComments({
       meId: req.user._id,
       post,
+      viewerUser: req.user,
       viewerAccountType: req.user?.accountType,
     });
     if (!access.ok) {
@@ -1936,6 +1951,7 @@ router.post("/:id/comment", auth, async (req, res) => {
     const g = await guardPostAccessForComments({
       meId: req.user._id,
       post,
+      viewerUser: req.user,
       viewerAccountType: req.user?.accountType,
     });
     if (!g.ok) {
@@ -2169,6 +2185,7 @@ router.get("/:id", auth, async (req, res) => {
     const g = await guardPostAccessForComments({
       meId: req.user._id,
       post,
+      viewerUser: req.user,
       viewerAccountType: req.user?.accountType,
     });
     if (!g.ok) {
@@ -2216,6 +2233,7 @@ router.get("/:id/comments", auth, async (req, res) => {
     const g = await guardPostAccessForComments({
       meId: req.user._id,
       post,
+      viewerUser: req.user,
       viewerAccountType: req.user?.accountType,
     });
     if (!g.ok) {
@@ -2295,6 +2313,7 @@ router.delete("/:postId", auth, async (req, res) => {
     const access = await guardPostAccessForComments({
       meId: req.user._id,
       post,
+      viewerUser: req.user,
       viewerAccountType: req.user?.accountType,
     });
     if (!access.ok && !isOwner && !isAdmin) {
@@ -2400,6 +2419,7 @@ router.delete("/:postId/comments/:commentId", auth, async (req, res) => {
     const g = await guardPostAccessForComments({
       meId: req.user._id,
       post,
+      viewerUser: req.user,
       viewerAccountType: req.user?.accountType,
     });
     if (!g.ok) {

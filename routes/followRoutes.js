@@ -7,6 +7,10 @@ const auth = require("../middleware/authMiddleware");
 const User = require("../models/user");
 const Follow = require("../models/Follow");
 const Notification = require("../models/notification");
+const {
+  getSameEnvironmentUserQuery,
+  shouldHideInternalTestUser,
+} = require("../utils/internalTestAccounts");
 
 async function markFollowRequestNotificationCancelled(followerId, followingId) {
   try {
@@ -56,8 +60,11 @@ router.post("/:id", auth, async (req, res) => {
     }
 
     // Carico target con isPrivate
-    const target = await User.findById(targetUserId).select("_id isPrivate username displayName avatar accountType").lean();
+    const target = await User.findById(targetUserId).select("_id email isPrivate isInternalTest username displayName avatar accountType").lean();
     if (!target) {
+      return res.status(404).json({ status: "error", message: "User to follow not found" });
+    }
+    if (shouldHideInternalTestUser(target, req.user)) {
       return res.status(404).json({ status: "error", message: "User to follow not found" });
     }
 
@@ -328,8 +335,11 @@ router.get("/:id/followers", auth, async (req, res) => {
       return res.status(400).json({ status: "error", message: "Invalid user ID" });
     }
 
-    const target = await User.findById(targetUserId).select("_id isPrivate").lean();
+    const target = await User.findById(targetUserId).select("_id email isInternalTest isPrivate").lean();
     if (!target) {
+      return res.status(404).json({ status: "error", message: "User not found" });
+    }
+    if (shouldHideInternalTestUser(target, req.user, String(target._id) === String(me) ? me : null)) {
       return res.status(404).json({ status: "error", message: "User not found" });
     }
 
@@ -357,7 +367,11 @@ router.get("/:id/followers", auth, async (req, res) => {
 
     const followerIds = follows.map((f) => f.followerId);
 
-    const users = await User.find({ _id: { $in: followerIds } })
+    const environmentQuery = getSameEnvironmentUserQuery(req.user);
+    const users = await User.find({
+      _id: { $in: followerIds },
+      ...(environmentQuery ? { $and: [environmentQuery] } : {}),
+    })
       .select("_id username displayName avatar accountType")
       .lean();
 
@@ -383,12 +397,21 @@ router.get("/:id/followers", auth, async (req, res) => {
 router.get("/:id/following", auth, async (req, res) => {
   try {
     const targetUserId = req.params.id;
+    const me = req.user?._id;
 
     if (!targetUserId || targetUserId.length < 10) {
       return res.status(400).json({
         status: "error",
         message: "Invalid user ID",
       });
+    }
+
+    const target = await User.findById(targetUserId).select("_id email isInternalTest").lean();
+    if (!target) {
+      return res.status(404).json({ status: "error", message: "User not found" });
+    }
+    if (shouldHideInternalTestUser(target, req.user, String(target._id) === String(me) ? me : null)) {
+      return res.status(404).json({ status: "error", message: "User not found" });
     }
 
     const follows = await Follow.find({ followerId: targetUserId, status: "accepted" })
@@ -398,7 +421,11 @@ router.get("/:id/following", auth, async (req, res) => {
 
     const followingIds = follows.map((f) => f.followingId);
 
-    const users = await User.find({ _id: { $in: followingIds } })
+    const environmentQuery = getSameEnvironmentUserQuery(req.user);
+    const users = await User.find({
+      _id: { $in: followingIds },
+      ...(environmentQuery ? { $and: [environmentQuery] } : {}),
+    })
       .select("_id username displayName avatar accountType")
       .lean()
       .exec();

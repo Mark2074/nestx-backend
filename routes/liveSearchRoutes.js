@@ -9,7 +9,7 @@ const User = require("../models/user");
 const Event = require("../models/event");
 const Follow = require("../models/Follow");
 const { getBlockedUserIds } = require("../utils/blockUtils");
-const { getInternalTestUserConditions } = require("../utils/internalTestAccounts");
+const { getOppositeEnvironmentUserQuery } = require("../utils/internalTestAccounts");
 
 /**
  * Helpers
@@ -47,26 +47,27 @@ async function buildExcludedUserIds(meId, options = {}) {
   );
 
   let privateNotAllowedDocs = [];
-  let internalTestDocs = [];
+  let environmentExcludedDocs = [];
 
   if (!isAdmin) {
-    [privateNotAllowedDocs, internalTestDocs] = await Promise.all([
+    const environmentQuery = getOppositeEnvironmentUserQuery(options.viewerUser);
+    [privateNotAllowedDocs, environmentExcludedDocs] = await Promise.all([
       User.find({
         isPrivate: true,
         _id: { $nin: allowedPrivateObjIds },
       })
         .select("_id")
         .lean(),
-      User.find({ $or: getInternalTestUserConditions() })
-        .select("_id")
-        .lean(),
+      environmentQuery
+        ? User.find(environmentQuery).select("_id").lean()
+        : Promise.resolve([]),
     ]);
   }
 
   const privateNotAllowed = privateNotAllowedDocs.map((u) => String(u._id));
-  const internalTestIds = internalTestDocs.map((u) => String(u._id));
+  const environmentExcludedIds = environmentExcludedDocs.map((u) => String(u._id));
 
-  const excluded = new Set([...blockedSet, ...privateNotAllowed, ...internalTestIds]);
+  const excluded = new Set([...blockedSet, ...privateNotAllowed, ...environmentExcludedIds]);
   excluded.delete(String(meId)); // io posso sempre vedermi
   return Array.from(excluded);
 }
@@ -131,7 +132,7 @@ router.get("/search", auth, async (req, res) => {
     const allowedProfileTypes = ["male", "female", "couple", "gay", "trans"];
     const safeProfileType = allowedProfileTypes.includes(profileType) ? profileType : null;
 
-    const excludedUserIds = await buildExcludedUserIds(meObjId, { isAdmin });
+    const excludedUserIds = await buildExcludedUserIds(meObjId, { isAdmin, viewerUser: me });
     const excludedObjIds = excludedUserIds.map((id) => new mongoose.Types.ObjectId(id));
 
     const adminUsers = await User.find({ accountType: "admin" }).select("_id").lean();
