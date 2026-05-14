@@ -235,6 +235,32 @@ function isValidEmailFormat(value) {
   return emailRegex.test(email);
 }
 
+function hasExpiredEmailVerification(user, now = new Date()) {
+  if (!user || user.emailVerifiedAt) return false;
+  if (user.isDeleted === true || user.isBanned === true) return false;
+  if (!user.emailVerifyExpiresAt) return false;
+  return new Date(user.emailVerifyExpiresAt).getTime() <= now.getTime();
+}
+
+async function cleanupExpiredUnverifiedUser(user, now = new Date()) {
+  if (!hasExpiredEmailVerification(user, now)) return false;
+
+  await AgeGateLog.updateMany(
+    { userId: user._id },
+    { $set: { userId: null, linkedAt: null, status: "anonymous" } }
+  );
+
+  const result = await User.deleteOne({
+    _id: user._id,
+    emailVerifiedAt: null,
+    isDeleted: { $ne: true },
+    isBanned: { $ne: true },
+    emailVerifyExpiresAt: { $lte: now },
+  });
+
+  return (result.deletedCount || 0) > 0;
+}
+
 // --------------------------------------------------
 // REGISTRAZIONE: POST /api/auth/register
 // body: { email, password, displayName }
@@ -307,6 +333,20 @@ router.post('/register', async (req, res) => {
     // Controllo se esiste già
     const existing = await User.findOne({ email: emailNorm });
     if (existing) {
+      if (await cleanupExpiredUnverifiedUser(existing)) {
+        // old pending account was removed; continue with a clean registration
+      } else {
+        return res.status(409).json({
+          status: 'error',
+          message: "User already registered.",
+        });
+      }
+    }
+
+    const existingAfterCleanup = existing
+      ? await User.findOne({ email: emailNorm })
+      : null;
+    if (existingAfterCleanup) {
       return res.status(409).json({
         status: 'error',
         message: "User already registered.",
@@ -917,6 +957,8 @@ router.post("/verify-email/resend", async (req, res) => {
 
     if (user.emailVerifiedAt) return genericOk();
 
+    if (await cleanupExpiredUnverifiedUser(user)) return genericOk();
+
     if (user.isDeleted === true) return genericOk();
     if (user.isBanned === true) return genericOk();
 
@@ -1028,6 +1070,16 @@ router.post("/verify-email/confirm", async (req, res) => {
     });
 
     if (!user) {
+      const expiredUser = await User.findOne({
+        emailVerifyTokenHash: tokenHash,
+        emailVerifiedAt: null,
+        emailVerifyExpiresAt: { $lte: now },
+      });
+
+      if (expiredUser) {
+        await cleanupExpiredUnverifiedUser(expiredUser, now);
+      }
+
       return res.status(400).json({ status: "error", message: "This verification link has expired. Please request a new one." });
     }
 
