@@ -38,35 +38,6 @@ router.post("/:id", auth, async (req, res) => {
 
     const newStatus = target.isPrivate ? "pending" : "accepted";
 
-    // --- NOTIFICA (best-effort) ---
-    try {
-      if (newStatus === "pending") {
-        // notifica al target: richiesta follow
-        await Notification.create({
-          userId: target._id,
-          actorId: me,
-          type: "SOCIAL_FOLLOW_REQUEST",
-          targetType: "user",
-          targetId: me,
-          message: "New follow request",
-          dedupeKey: `follow_request:${me.toString()}:${target._id.toString()}`,
-        });
-      } else {
-        // notifica al target: nuovo follower
-        await Notification.create({
-          userId: target._id,
-          actorId: me,
-          type: "SOCIAL_NEW_FOLLOWER",
-          targetType: "user",
-          targetId: me,
-          message: "You have a new follower",
-          dedupeKey: `new_follower:${me.toString()}:${target._id.toString()}`,
-        });
-      }
-    } catch (e) {
-      // dedupeKey può già esistere -> ignora
-    }
-
     const existing = await Follow.findOne({ followerId: me, followingId: target._id }).lean();
     if (existing) {
       // se è già pending o accepted, non rifare nulla
@@ -104,6 +75,44 @@ router.post("/:id", auth, async (req, res) => {
       targetIsPrivate: target.isPrivate,
       savedStatus: doc?.status,
     });
+
+    // --- NOTIFICA (best-effort) ---
+    try {
+      const notification =
+        newStatus === "pending"
+          ? {
+              type: "SOCIAL_FOLLOW_REQUEST",
+              message: "New follow request",
+              dedupeKey: `follow_request:${me.toString()}:${target._id.toString()}`,
+            }
+          : {
+              type: "SOCIAL_NEW_FOLLOWER",
+              message: "You have a new follower",
+              dedupeKey: `new_follower:${me.toString()}:${target._id.toString()}`,
+            };
+
+      await Notification.updateOne(
+        { dedupeKey: notification.dedupeKey },
+        {
+          $set: {
+            userId: target._id,
+            actorId: me,
+            type: notification.type,
+            targetType: "user",
+            targetId: me,
+            message: notification.message,
+            isRead: false,
+            readAt: null,
+          },
+          $setOnInsert: {
+            dedupeKey: notification.dedupeKey,
+          },
+        },
+        { upsert: true }
+      );
+    } catch (e) {
+      console.error("FOLLOW_NOTIFICATION_ERROR", e?.message || e);
+    }
 
     return res.status(200).json({
       status: "success",
@@ -165,6 +174,22 @@ console.log("FOLLOW_ACCEPT_CHECK", existing);
 
     // --- NOTIFICA (best-effort) ---
     try {
+      await Notification.updateOne(
+        {
+          userId: me,
+          actorId: followerId,
+          type: "SOCIAL_FOLLOW_REQUEST",
+          dedupeKey: `follow_request:${followerIdFromParams.toString()}:${me.toString()}`,
+        },
+        {
+          $set: {
+            isRead: true,
+            readAt: new Date(),
+            "data.followRequestAccepted": true,
+          },
+        }
+      );
+
       await Notification.create({
         userId: followerIdFromParams,
         actorId: me,
