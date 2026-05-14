@@ -8,6 +8,31 @@ const User = require("../models/user");
 const Follow = require("../models/Follow");
 const Notification = require("../models/notification");
 
+async function markFollowRequestNotificationCancelled(followerId, followingId) {
+  try {
+    await Notification.updateOne(
+      {
+        userId: followingId,
+        actorId: followerId,
+        type: "SOCIAL_FOLLOW_REQUEST",
+        dedupeKey: `follow_request:${followerId.toString()}:${followingId.toString()}`,
+      },
+      {
+        $set: {
+          message: "Follow request cancelled",
+          isRead: true,
+          readAt: new Date(),
+          "data.followRequestCancelled": true,
+          "data.followRequestAccepted": false,
+          "data.actionable": false,
+        },
+      }
+    );
+  } catch (e) {
+    console.error("FOLLOW_REQUEST_NOTIFICATION_CANCEL_ERROR", e?.message || e);
+  }
+}
+
 /**
  * @route   POST /api/follow/:id
  * @desc    Segui un utente (pending se target privato, accepted se pubblico)
@@ -101,6 +126,14 @@ router.post("/:id", auth, async (req, res) => {
             targetType: "user",
             targetId: me,
             message: notification.message,
+            data:
+              newStatus === "pending"
+                ? {
+                    followRequestCancelled: false,
+                    followRequestAccepted: false,
+                    actionable: true,
+                  }
+                : {},
             isRead: false,
             readAt: null,
           },
@@ -169,7 +202,12 @@ router.post("/request/:followerId/accept", auth, async (req, res) => {
 console.log("FOLLOW_ACCEPT_CHECK", existing);
 
     if (!doc) {
-      return res.status(404).json({ status: "error", message: "Pending follow request not found" });
+      await markFollowRequestNotificationCancelled(followerId, me);
+      return res.status(409).json({
+        status: "error",
+        code: "FOLLOW_REQUEST_NOT_PENDING",
+        message: "Follow request is no longer pending",
+      });
     }
 
     // --- NOTIFICA (best-effort) ---
@@ -251,6 +289,10 @@ router.delete("/:id", auth, async (req, res) => {
           unfollowed: false,
         },
       });
+    }
+
+    if (result.status === "pending") {
+      await markFollowRequestNotificationCancelled(user._id, targetUserId);
     }
 
     return res.status(200).json({
@@ -478,6 +520,8 @@ router.delete("/request/:id/cancel", auth, async (req, res) => {
         message: "No pending request to cancel",
       });
     }
+
+    await markFollowRequestNotificationCancelled(me, targetUserId);
 
     return res.status(200).json({
       status: "success",
