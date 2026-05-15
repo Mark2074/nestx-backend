@@ -29,6 +29,7 @@ const TokenTransactionSchema = new mongoose.Schema(
         "showcase_charge",
         "showcase_release",
         "payout",
+        "admin_test_grant",
       ],
       required: true,
     },

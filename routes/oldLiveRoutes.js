@@ -9,6 +9,7 @@ const User = require("../models/user");
 const Follow = require("../models/Follow");
 const { isUserBlockedEitherSide } = require("../utils/blockUtils");
 const { shouldHideInternalTestUser } = require("../utils/internalTestAccounts");
+const { shouldHidePublicSocialUser } = require("../utils/publicSocialUser");
 
 /**
  * OLD-LIVE (profilo utente)
@@ -35,7 +36,9 @@ router.get("/old-live/:userId", auth, async (req, res) => {
     }
 
     // ✅ PRIVACY GUARD: old-live visibile solo a owner o follower accepted se profilo privato
-    const targetUser = await User.findById(userId).select("_id email isPrivate accountType isInternalTest").lean();
+    const targetUser = await User.findById(userId)
+      .select("_id email emailVerifiedAt isPrivate accountType isInternalTest isBanned isSuspended isDeleted deletedAt")
+      .lean();
     if (!targetUser) {
       return res.status(404).json({ status: "error", message: "User not found" });
     }
@@ -49,6 +52,12 @@ router.get("/old-live/:userId", auth, async (req, res) => {
     const isOwner = meId && meId === String(targetUser._id);
     const isAdmin = String(req.user?.accountType || "").toLowerCase() === "admin";
     if (shouldHideInternalTestUser(targetUser, req.user, isOwner ? req.user._id : null)) {
+      return res.status(404).json({
+        status: "error",
+        message: "User not found",
+      });
+    }
+    if (shouldHidePublicSocialUser(targetUser, req.user, isOwner ? req.user._id : null)) {
       return res.status(404).json({
         status: "error",
         message: "User not found",

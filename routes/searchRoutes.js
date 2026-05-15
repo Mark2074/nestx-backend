@@ -11,6 +11,7 @@ const Follow = require("../models/Follow");
 const auth = require("../middleware/authMiddleware");
 const { getBlockedUserIds } = require("../utils/blockUtils");
 const { getOppositeEnvironmentUserQuery } = require("../utils/internalTestAccounts");
+const { publicActiveUserQuery } = require("../utils/publicSocialUser");
 const crypto = require("crypto");
 const SensitiveDictionaryEntry = require("../models/SensitiveDictionaryEntry");
 const ProhibitedSearchLog = require("../models/ProhibitedSearchLog");
@@ -76,7 +77,13 @@ async function buildExcludedUserIds(meId, options = {}) {
         .select("_id")
         .lean(),
       User.find({
-        isBanned: true,
+        $or: [
+          { isBanned: true },
+          { isSuspended: true },
+          { isDeleted: true },
+          { deletedAt: { $ne: null } },
+          { emailVerifiedAt: null },
+        ],
       })
         .select("_id")
         .lean(),
@@ -276,7 +283,15 @@ router.get("/search", auth, async (req, res) => {
     if (!isAdmin) {
       const environmentQuery = getOppositeEnvironmentUserQuery(me);
       const [bannedUsers, internalTestUsers] = await Promise.all([
-        User.find({ isBanned: true }).select("_id").lean(),
+        User.find({
+          $or: [
+            { isBanned: true },
+            { isSuspended: true },
+            { isDeleted: true },
+            { deletedAt: { $ne: null } },
+            { emailVerifiedAt: null },
+          ],
+        }).select("_id").lean(),
         environmentQuery
           ? User.find(environmentQuery).select("_id").lean()
           : Promise.resolve([]),
@@ -310,12 +325,12 @@ router.get("/search", auth, async (req, res) => {
     // ------------------------
     let users = [];
     if (safeType === "users") {
-      const userQuery = {
+      const userQuery = publicActiveUserQuery({
         _id: { $nin: finalExcludedObjIdsUsers },
-      };
+      });
 
       if (rx) {
-        userQuery.$or = [{ displayName: rx }, { bio: rx }];
+        userQuery.$or = [{ displayName: rx }, { username: rx }, { email: rx }, { bio: rx }];
       }
 
       // VIP only: profileType/country/language
@@ -374,7 +389,8 @@ router.get("/search", auth, async (req, res) => {
       ];
 
       // VIP only: filtri su AUTORE (non sul post)
-      if (canUseVipFilters && (profileType || country || language)) {        const authorQ = { _id: { $nin: finalExcludedObjIds } };
+      if (canUseVipFilters && (profileType || country || language)) {
+        const authorQ = publicActiveUserQuery({ _id: { $nin: finalExcludedObjIds } });
         if (profileType) authorQ.profileType = profileType;
         if (language) authorQ.language = language;
 

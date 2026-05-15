@@ -10,6 +10,7 @@ const {
   getOppositeEnvironmentUserQuery,
   shouldHideInternalTestUser,
 } = require("../utils/internalTestAccounts");
+const { shouldHidePublicSocialUser } = require("../utils/publicSocialUser");
 
 const router = express.Router();
 
@@ -76,9 +77,16 @@ async function reconcileFollowRequestNotifications(items, userId) {
 
 async function getEnvironmentExcludedActorIds(viewerUser) {
   const environmentQuery = getOppositeEnvironmentUserQuery(viewerUser);
-  if (!environmentQuery) return [];
+  const hiddenConditions = [
+    { emailVerifiedAt: null },
+    { isBanned: true },
+    { isSuspended: true },
+    { isDeleted: true },
+    { deletedAt: { $ne: null } },
+    ...(environmentQuery ? [environmentQuery] : []),
+  ];
 
-  const users = await User.find(environmentQuery).select("_id").lean();
+  const users = await User.find({ $or: hiddenConditions }).select("_id").lean();
   return users.map((u) => u._id);
 }
 
@@ -111,13 +119,16 @@ router.get("/", auth, async (req, res) => {
 
     const rawItems = await Notification.find(q)
       .sort({ createdAt: -1 })
-      .populate("actorId", "username displayName avatar email isInternalTest")
+      .populate("actorId", "username displayName avatar email emailVerifiedAt accountType isInternalTest isBanned isSuspended isDeleted deletedAt")
       .limit(limit)
       .lean();
 
     const environmentItems = rawItems.filter((item) => {
       if (!item?.actorId || typeof item.actorId !== "object") return true;
-      return !shouldHideInternalTestUser(item.actorId, req.user);
+      return (
+        !shouldHideInternalTestUser(item.actorId, req.user) &&
+        !shouldHidePublicSocialUser(item.actorId, req.user)
+      );
     });
 
     const items = await reconcileFollowRequestNotifications(environmentItems, me);
@@ -149,6 +160,12 @@ router.get("/unread-count", auth, async (req, res) => {
       ];
     }
 
+    const unreadFollowRequests = await Notification.find({
+      ...q,
+      type: "SOCIAL_FOLLOW_REQUEST",
+    }).lean();
+
+    await reconcileFollowRequestNotifications(unreadFollowRequests, me);
     const count = await Notification.countDocuments(q);
     return res.json({ status: "success", count });
   } catch (err) {
@@ -175,7 +192,7 @@ router.patch("/:id/read", auth, async (req, res) => {
       { $set: { isRead: true, readAt: new Date() } },
       { new: true }
     )
-      .populate("actorId", "username displayName avatar email isInternalTest")
+      .populate("actorId", "username displayName avatar email emailVerifiedAt accountType isInternalTest isBanned isSuspended isDeleted deletedAt")
       .lean()
       .exec();
 

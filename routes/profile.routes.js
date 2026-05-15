@@ -14,6 +14,7 @@ const {
 } = require("../services/r2MediaService");
 const { maybeRenewVip } = require("../services/vipService");
 const { shouldHideInternalTestUser } = require("../utils/internalTestAccounts");
+const { shouldHidePublicSocialUser } = require("../utils/publicSocialUser");
 
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
 const ALLOWED_MIMES = new Set(["image/jpeg", "image/png", "image/webp"]);
@@ -387,7 +388,7 @@ router.get("/public/:id", auth, async (req, res) => {
     // Dati base utente (profilo pubblico)
     const user = await User.findById(targetUserId)
       .select(
-        "_id email displayName profileType area bio avatar coverImage interests language isVip verifiedUser isCreator creatorEnabled payoutProvider payoutEnabled payoutStatus createdAt verificationStatus verificationPublicVideoUrl isPrivate accountType status accountStatus isDeleted deletedAt deletionStatus isInternalTest"
+        "_id email emailVerifiedAt displayName profileType area bio avatar coverImage interests language isVip verifiedUser isCreator creatorEnabled payoutProvider payoutEnabled payoutStatus createdAt verificationStatus verificationPublicVideoUrl isPrivate accountType status accountStatus isBanned isSuspended isDeleted deletedAt deletionStatus isInternalTest"
       )
       .lean()
       .exec();
@@ -431,6 +432,14 @@ router.get("/public/:id", auth, async (req, res) => {
     const isOwner = meId && meId === String(user._id);
 
     if (shouldHideInternalTestUser(user, req.user, isOwner ? req.user._id : null)) {
+      return res.status(404).json({
+        status: "error",
+        code: "USER_NOT_FOUND",
+        message: "User not found",
+      });
+    }
+
+    if (shouldHidePublicSocialUser(user, req.user, isOwner ? req.user._id : null)) {
       return res.status(404).json({
         status: "error",
         code: "USER_NOT_FOUND",

@@ -35,6 +35,8 @@ const AdminAuditLogSchema = new mongoose.Schema(
         "ADMIN_PRIVATE_FUNDS_FROZEN",
         "ADMIN_PRIVATE_FUNDS_REFUNDED",
         "ADMIN_CREATOR_DISABLED",
+        "ADMIN_TEST_TOKEN_GRANT",
+        "ADMIN_TEST_VIP_GRANT",
       ],
       required: true,
       index: true,

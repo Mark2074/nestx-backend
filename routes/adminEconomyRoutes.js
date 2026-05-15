@@ -12,12 +12,14 @@ const AdminAuditLog = require("../models/AdminAuditLog");
 const ActionAuditLog = require("../models/ActionAuditLog");
 const Ticket = require("../models/ticket");
 const RefundLog = require("../models/RefundLog");
+const crypto = require("crypto");
 const { appendAccountTrustEvent } = require("../services/accountTrustRecordService");
 const {
   getMetricEnvironment,
   getValidJoinedUserMetricMatch,
   getValidUserMetricMatch,
 } = require("../utils/adminMetricUserFilters");
+const { getInternalTestUserConditions } = require("../utils/internalTestAccounts");
 
 const {
   freezeNativePrivateHeldEvent,
@@ -25,6 +27,358 @@ const {
 } = require("../services/nativePrivateEconomicService");
 
 const router = express.Router();
+
+function clampPositiveInt(value, min, max, fallback = null) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  const x = Math.floor(n);
+  if (x < min || x > max) return fallback;
+  return x;
+}
+
+function getClientIp(req) {
+  const xff = req.headers["x-forwarded-for"];
+  if (typeof xff === "string" && xff.trim()) return xff.split(",")[0].trim();
+  if (Array.isArray(xff) && xff.length) return String(xff[0]).trim();
+  return req.ip || null;
+}
+
+async function writeAdminTestAudit(req, {
+  actionType,
+  targetUserId,
+  amountTokens = null,
+  vipDays = null,
+  opId = null,
+  groupId = null,
+  before = null,
+  after = null,
+  note = null,
+}) {
+  const meta = {
+    testOnly: true,
+    amountTokens,
+    vipDays,
+    opId,
+    groupId,
+    note,
+    before,
+    after,
+    ip: getClientIp(req),
+    userAgent: String(req.headers["user-agent"] || "").slice(0, 500) || null,
+  };
+
+  await Promise.allSettled([
+    AdminAuditLog.create({
+      adminId: req.user?._id || null,
+      actionType,
+      targetType: "user",
+      targetId: String(targetUserId),
+      meta,
+    }),
+    ActionAuditLog.create({
+      actorId: req.user?._id,
+      actorRole: "admin",
+      actionType,
+      targetType: "user",
+      targetId: String(targetUserId),
+      reason: "internal_test_utility",
+      meta,
+      ip: meta.ip,
+      userAgent: meta.userAgent,
+    }),
+  ]);
+}
+
+// GET /api/admin/economy/test-accounts
+// Future "Test accounts" surface: lists only internal-test scoped accounts.
+router.get("/test-accounts", auth, adminGuard, async (req, res) => {
+  try {
+    const conditions = getInternalTestUserConditions();
+    const users = await User.find({ $or: conditions })
+      .select(
+        "_id email displayName username avatar accountType isInternalTest isVip vipExpiresAt tokenBalance tokenPurchased tokenEarnings tokenRedeemable tokenHeld createdAt"
+      )
+      .sort({ createdAt: -1 })
+      .limit(200)
+      .lean();
+
+    return res.json({
+      status: "ok",
+      data: users.map((user) => ({
+        ...user,
+        eligibleForTestGrants: user?.isInternalTest === true,
+      })),
+    });
+  } catch (e) {
+    console.error("admin test accounts list error:", e);
+    return res.status(500).json({ status: "error", message: "Internal error" });
+  }
+});
+
+// POST /api/admin/economy/test-accounts/:userId/grant-tokens
+router.post("/test-accounts/:userId/grant-tokens", auth, adminGuard, async (req, res) => {
+  const session = await mongoose.startSession();
+
+  try {
+    const targetUserId = String(req.params.userId || "").trim();
+    const amountTokens = clampPositiveInt(req.body?.amountTokens, 1, 1_000_000);
+    const note = String(req.body?.note || "").trim().slice(0, 300) || null;
+
+    if (!mongoose.Types.ObjectId.isValid(targetUserId)) {
+      return res.status(400).json({ status: "error", code: "INVALID_USER_ID", message: "Invalid user ID" });
+    }
+
+    if (!amountTokens) {
+      return res.status(400).json({
+        status: "error",
+        code: "INVALID_TOKEN_AMOUNT",
+        message: "amountTokens must be an integer between 1 and 1000000",
+      });
+    }
+
+    const opIdRaw = String(req.body?.opId || req.headers["idempotency-key"] || req.headers["x-idempotency-key"] || "").trim();
+    const opId = opIdRaw.length >= 8 ? opIdRaw.slice(0, 120) : `admin_test_grant_${crypto.randomUUID()}`;
+    const groupId = `grp_${crypto.randomUUID()}`;
+
+    let updatedUser = null;
+    let txDoc = null;
+    let before = null;
+
+    await session.withTransaction(async () => {
+      const target = await User.findById(targetUserId)
+        .select("_id email displayName isInternalTest tokenBalance tokenPurchased tokenEarnings tokenRedeemable tokenHeld")
+        .session(session);
+
+      if (!target) {
+        const err = new Error("User not found");
+        err.statusCode = 404;
+        err.code = "USER_NOT_FOUND";
+        throw err;
+      }
+
+      if (target.isInternalTest !== true) {
+        const err = new Error("Test token grants are allowed only for internal test accounts");
+        err.statusCode = 403;
+        err.code = "TARGET_NOT_INTERNAL_TEST";
+        throw err;
+      }
+
+      before = {
+        tokenBalance: Number(target.tokenBalance || 0),
+        tokenPurchased: Number(target.tokenPurchased || 0),
+        tokenEarnings: Number(target.tokenEarnings || 0),
+        tokenRedeemable: Number(target.tokenRedeemable || 0),
+        tokenHeld: Number(target.tokenHeld || 0),
+      };
+
+      const existing = await TokenTransaction.findOne({
+        opId,
+        kind: "admin_test_grant",
+        direction: "credit",
+        toUserId: target._id,
+      }).session(session);
+
+      if (existing) {
+        txDoc = existing;
+        updatedUser = await User.findById(target._id)
+          .select("tokenBalance tokenPurchased tokenEarnings tokenRedeemable tokenHeld isInternalTest")
+          .session(session);
+        return;
+      }
+
+      updatedUser = await User.findByIdAndUpdate(
+        target._id,
+        {
+          $inc: {
+            tokenBalance: amountTokens,
+            tokenPurchased: amountTokens,
+          },
+        },
+        { new: true, session }
+      ).select("tokenBalance tokenPurchased tokenEarnings tokenRedeemable tokenHeld isInternalTest");
+
+      txDoc = await TokenTransaction.create(
+        [
+          {
+            opId,
+            groupId,
+            fromUserId: null,
+            toUserId: target._id,
+            kind: "admin_test_grant",
+            direction: "credit",
+            context: "system",
+            amountTokens,
+            amountEuro: 0,
+            metadata: {
+              testOnly: true,
+              grantedByAdminId: String(req.user?._id || ""),
+              note,
+            },
+          },
+        ],
+        { session }
+      ).then((rows) => rows[0]);
+
+      await Notification.create(
+        [
+          {
+            userId: target._id,
+            actorId: req.user?._id || null,
+            type: "TOKEN_RECEIVED",
+            targetType: "token_tx",
+            targetId: txDoc._id,
+            message: `Test token grant: +${amountTokens} token`,
+            data: {
+              kind: "admin_test_grant",
+              testOnly: true,
+              amountTokens,
+              opId,
+              groupId,
+            },
+            isPersistent: true,
+            dedupeKey: `token_tx:${opId}:admin_test_grant`,
+          },
+        ],
+        { session }
+      );
+    });
+
+    await writeAdminTestAudit(req, {
+      actionType: "ADMIN_TEST_TOKEN_GRANT",
+      targetUserId,
+      amountTokens,
+      opId,
+      groupId,
+      before,
+      after: {
+        tokenBalance: Number(updatedUser?.tokenBalance || 0),
+        tokenPurchased: Number(updatedUser?.tokenPurchased || 0),
+        tokenEarnings: Number(updatedUser?.tokenEarnings || 0),
+        tokenRedeemable: Number(updatedUser?.tokenRedeemable || 0),
+        tokenHeld: Number(updatedUser?.tokenHeld || 0),
+      },
+      note,
+    });
+
+    return res.status(201).json({
+      status: "ok",
+      data: {
+        targetUserId,
+        amountTokens,
+        opId,
+        transactionId: txDoc?._id || null,
+        tokenBalance: Number(updatedUser?.tokenBalance || 0),
+        tokenPurchased: Number(updatedUser?.tokenPurchased || 0),
+        tokenEarnings: Number(updatedUser?.tokenEarnings || 0),
+        tokenRedeemable: Number(updatedUser?.tokenRedeemable || 0),
+        tokenHeld: Number(updatedUser?.tokenHeld || 0),
+      },
+    });
+  } catch (e) {
+    console.error("admin test token grant error:", e);
+    return res.status(e.statusCode || 500).json({
+      status: "error",
+      code: e.code || "TEST_TOKEN_GRANT_FAILED",
+      message: e.message || "Internal error",
+    });
+  } finally {
+    session.endSession();
+  }
+});
+
+// POST /api/admin/economy/test-accounts/:userId/grant-vip
+router.post("/test-accounts/:userId/grant-vip", auth, adminGuard, async (req, res) => {
+  try {
+    const targetUserId = String(req.params.userId || "").trim();
+    const vipDays = clampPositiveInt(req.body?.days ?? 30, 1, 366, 30);
+    const note = String(req.body?.note || "").trim().slice(0, 300) || null;
+
+    if (!mongoose.Types.ObjectId.isValid(targetUserId)) {
+      return res.status(400).json({ status: "error", code: "INVALID_USER_ID", message: "Invalid user ID" });
+    }
+
+    const target = await User.findById(targetUserId)
+      .select("_id email displayName isInternalTest isVip vipExpiresAt vipAutoRenew vipSince")
+      .lean();
+
+    if (!target) {
+      return res.status(404).json({ status: "error", code: "USER_NOT_FOUND", message: "User not found" });
+    }
+
+    if (target.isInternalTest !== true) {
+      return res.status(403).json({
+        status: "error",
+        code: "TARGET_NOT_INTERNAL_TEST",
+        message: "Test VIP grants are allowed only for internal test accounts",
+      });
+    }
+
+    const now = new Date();
+    const currentExp = target.vipExpiresAt ? new Date(target.vipExpiresAt) : null;
+    const base = currentExp && currentExp > now ? currentExp : now;
+    const vipExpiresAt = new Date(base.getTime() + vipDays * 24 * 60 * 60 * 1000);
+
+    const updated = await User.findByIdAndUpdate(
+      target._id,
+      {
+        $set: {
+          isVip: true,
+          vipExpiresAt,
+          vipAutoRenew: false,
+          ...(target.vipSince ? {} : { vipSince: now }),
+        },
+      },
+      { new: true }
+    ).select("_id isVip vipExpiresAt vipAutoRenew vipSince isInternalTest");
+
+    await Notification.create({
+      userId: target._id,
+      actorId: req.user?._id || null,
+      type: "SYSTEM_VIP_CHANGED",
+      targetType: "user",
+      targetId: target._id,
+      message: `Test VIP granted for ${vipDays} day${vipDays === 1 ? "" : "s"}`,
+      data: {
+        testOnly: true,
+        vipDays,
+        vipExpiresAt,
+      },
+      isPersistent: false,
+      dedupeKey: `test_vip_grant:${target._id}:${vipExpiresAt.getTime()}`,
+    });
+
+    await writeAdminTestAudit(req, {
+      actionType: "ADMIN_TEST_VIP_GRANT",
+      targetUserId,
+      vipDays,
+      before: {
+        isVip: target.isVip === true,
+        vipExpiresAt: target.vipExpiresAt || null,
+        vipAutoRenew: target.vipAutoRenew === true,
+      },
+      after: {
+        isVip: updated?.isVip === true,
+        vipExpiresAt: updated?.vipExpiresAt || null,
+        vipAutoRenew: updated?.vipAutoRenew === true,
+      },
+      note,
+    });
+
+    return res.json({
+      status: "ok",
+      data: {
+        targetUserId,
+        isVip: updated?.isVip === true,
+        vipExpiresAt: updated?.vipExpiresAt || null,
+        vipAutoRenew: updated?.vipAutoRenew === true,
+        vipDays,
+      },
+    });
+  } catch (e) {
+    console.error("admin test vip grant error:", e);
+    return res.status(500).json({ status: "error", message: "Internal error" });
+  }
+});
 
 // GET /api/admin/economy/summary (admin-only)
 router.get("/summary", auth, adminGuard, async (req, res) => {

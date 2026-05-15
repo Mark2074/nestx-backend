@@ -32,6 +32,9 @@ const {
   getSameEnvironmentUserQuery,
   shouldHideInternalTestUser,
 } = require("../utils/internalTestAccounts");
+const {
+  shouldHidePublicSocialUser,
+} = require("../utils/publicSocialUser");
 
 const { execFile } = require("child_process");
 const ffprobePath = require("ffprobe-static")?.path;
@@ -359,6 +362,8 @@ async function getNonPublicAuthorIds({ isAdminViewer = false, viewerUser = null 
     $or: [
       { accountType: "admin" },
       { isBanned: true },
+      { isSuspended: true },
+      { emailVerifiedAt: null },
       { isDeleted: true },
       { deletedAt: { $ne: null } },
       ...(environmentQuery ? [environmentQuery] : []),
@@ -416,7 +421,7 @@ async function guardPostAccessForComments({ meId, post, viewerUser = null, viewe
   const isAdminViewer = String(viewerAccountType || "").toLowerCase() === "admin";
 
   const author = await User.findById(authorIdValue)
-    .select("accountType email isPrivate isInternalTest isBanned isDeleted deletedAt")
+    .select("accountType email emailVerifiedAt isPrivate isInternalTest isBanned isSuspended isDeleted deletedAt")
     .lean();
 
   if (!author) {
@@ -435,6 +440,7 @@ async function guardPostAccessForComments({ meId, post, viewerUser = null, viewe
     !isAdminViewer &&
     (
       shouldHideInternalTestUser(author, viewerUser || { accountType: viewerAccountType }, isOwner ? meId : null) ||
+      shouldHidePublicSocialUser(author, viewerUser || { accountType: viewerAccountType }, isOwner ? meId : null) ||
       author?.isBanned === true ||
       isUserDeletedLike(author)
     )
@@ -987,7 +993,7 @@ router.get("/user/:userId", auth, async (req, res) => {
     // - owner
     // - follower accepted
     const targetUser = await User.findById(userId)
-      .select("_id email isPrivate accountType isInternalTest isBanned isDeleted deletedAt")
+      .select("_id email emailVerifiedAt isPrivate accountType isInternalTest isBanned isSuspended isDeleted deletedAt")
       .lean();
     if (!targetUser) {
       return res.status(404).json({ status: "error", message: "User not found" });
@@ -997,6 +1003,14 @@ router.get("/user/:userId", auth, async (req, res) => {
     const isOwner = meId && meId === String(targetUser._id);
 
     if (shouldHideInternalTestUser(targetUser, req.user, isOwner ? req.user._id : null)) {
+      return res.status(404).json({
+        status: "error",
+        code: "USER_NOT_FOUND",
+        message: "User not found",
+      });
+    }
+
+    if (shouldHidePublicSocialUser(targetUser, req.user, isOwner ? req.user._id : null)) {
       return res.status(404).json({
         status: "error",
         code: "USER_NOT_FOUND",
@@ -1447,6 +1461,8 @@ router.get('/feed/following', auth, async (req, res) => {
             _id: { $in: rawFollowingIds },
             accountType: { $ne: "admin" },
             isBanned: { $ne: true },
+            isSuspended: { $ne: true },
+            emailVerifiedAt: { $ne: null },
             isDeleted: { $ne: true },
             deletedAt: null,
             ...(environmentQuery ? { $and: [environmentQuery] } : {}),
@@ -1584,6 +1600,8 @@ router.get("/feed/following-mixed", auth, async (req, res) => {
         _id: { $in: safeFollowingIds.map((id) => new mongoose.Types.ObjectId(String(id))) },
         accountType: { $ne: "admin" },
         isBanned: { $ne: true },
+        isSuspended: { $ne: true },
+        emailVerifiedAt: { $ne: null },
         isDeleted: { $ne: true },
         deletedAt: null,
         ...(environmentQuery ? { $and: [environmentQuery] } : {}),

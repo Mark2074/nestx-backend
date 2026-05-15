@@ -11,6 +11,10 @@ const {
   getSameEnvironmentUserQuery,
   shouldHideInternalTestUser,
 } = require("../utils/internalTestAccounts");
+const {
+  publicActiveUserQuery,
+  shouldHidePublicSocialUser,
+} = require("../utils/publicSocialUser");
 
 async function markFollowRequestNotificationCancelled(followerId, followingId) {
   try {
@@ -60,11 +64,14 @@ router.post("/:id", auth, async (req, res) => {
     }
 
     // Carico target con isPrivate
-    const target = await User.findById(targetUserId).select("_id email isPrivate isInternalTest username displayName avatar accountType").lean();
+    const target = await User.findById(targetUserId).select("_id email emailVerifiedAt isPrivate isInternalTest username displayName avatar accountType isBanned isSuspended isDeleted deletedAt").lean();
     if (!target) {
       return res.status(404).json({ status: "error", message: "User to follow not found" });
     }
     if (shouldHideInternalTestUser(target, req.user)) {
+      return res.status(404).json({ status: "error", message: "User to follow not found" });
+    }
+    if (shouldHidePublicSocialUser(target, req.user)) {
       return res.status(404).json({ status: "error", message: "User to follow not found" });
     }
 
@@ -231,6 +238,8 @@ console.log("FOLLOW_ACCEPT_CHECK", existing);
             isRead: true,
             readAt: new Date(),
             "data.followRequestAccepted": true,
+            "data.followRequestCancelled": false,
+            "data.actionable": false,
           },
         }
       );
@@ -335,11 +344,14 @@ router.get("/:id/followers", auth, async (req, res) => {
       return res.status(400).json({ status: "error", message: "Invalid user ID" });
     }
 
-    const target = await User.findById(targetUserId).select("_id email isInternalTest isPrivate").lean();
+    const target = await User.findById(targetUserId).select("_id email emailVerifiedAt isInternalTest isPrivate accountType isBanned isSuspended isDeleted deletedAt").lean();
     if (!target) {
       return res.status(404).json({ status: "error", message: "User not found" });
     }
     if (shouldHideInternalTestUser(target, req.user, String(target._id) === String(me) ? me : null)) {
+      return res.status(404).json({ status: "error", message: "User not found" });
+    }
+    if (shouldHidePublicSocialUser(target, req.user, String(target._id) === String(me) ? me : null)) {
       return res.status(404).json({ status: "error", message: "User not found" });
     }
 
@@ -369,7 +381,7 @@ router.get("/:id/followers", auth, async (req, res) => {
 
     const environmentQuery = getSameEnvironmentUserQuery(req.user);
     const users = await User.find({
-      _id: { $in: followerIds },
+      ...publicActiveUserQuery({ _id: { $in: followerIds } }),
       ...(environmentQuery ? { $and: [environmentQuery] } : {}),
     })
       .select("_id username displayName avatar accountType")
@@ -406,11 +418,14 @@ router.get("/:id/following", auth, async (req, res) => {
       });
     }
 
-    const target = await User.findById(targetUserId).select("_id email isInternalTest").lean();
+    const target = await User.findById(targetUserId).select("_id email emailVerifiedAt isInternalTest accountType isBanned isSuspended isDeleted deletedAt").lean();
     if (!target) {
       return res.status(404).json({ status: "error", message: "User not found" });
     }
     if (shouldHideInternalTestUser(target, req.user, String(target._id) === String(me) ? me : null)) {
+      return res.status(404).json({ status: "error", message: "User not found" });
+    }
+    if (shouldHidePublicSocialUser(target, req.user, String(target._id) === String(me) ? me : null)) {
       return res.status(404).json({ status: "error", message: "User not found" });
     }
 
@@ -423,7 +438,7 @@ router.get("/:id/following", auth, async (req, res) => {
 
     const environmentQuery = getSameEnvironmentUserQuery(req.user);
     const users = await User.find({
-      _id: { $in: followingIds },
+      ...publicActiveUserQuery({ _id: { $in: followingIds } }),
       ...(environmentQuery ? { $and: [environmentQuery] } : {}),
     })
       .select("_id username displayName avatar accountType")
@@ -474,6 +489,18 @@ router.get("/relationship/:id", auth, async (req, res) => {
           followsMe: false,
           followStatus: "self",
         },
+      });
+    }
+
+    const target = await User.findById(targetUserId)
+      .select("_id emailVerifiedAt accountType isBanned isSuspended isDeleted deletedAt isInternalTest")
+      .lean();
+
+    if (!target || shouldHideInternalTestUser(target, req.user) || shouldHidePublicSocialUser(target, req.user)) {
+      return res.status(404).json({
+        status: "error",
+        code: "USER_NOT_FOUND",
+        message: "User not found",
       });
     }
 
