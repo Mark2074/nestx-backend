@@ -19,7 +19,6 @@ const {
   getValidJoinedUserMetricMatch,
   getValidUserMetricMatch,
 } = require("../utils/adminMetricUserFilters");
-const { getInternalTestUserConditions } = require("../utils/internalTestAccounts");
 
 const {
   freezeNativePrivateHeldEvent,
@@ -41,6 +40,26 @@ function getClientIp(req) {
   if (typeof xff === "string" && xff.trim()) return xff.split(",")[0].trim();
   if (Array.isArray(xff) && xff.length) return String(xff[0]).trim();
   return req.ip || null;
+}
+
+function getActiveInternalTestAccountQuery() {
+  return {
+    isInternalTest: true,
+    isDeleted: { $ne: true },
+    deletedAt: null,
+    isBanned: { $ne: true },
+    isSuspended: { $ne: true },
+  };
+}
+
+function isActiveInternalTestAccount(user) {
+  return (
+    user?.isInternalTest === true &&
+    user?.isDeleted !== true &&
+    !user?.deletedAt &&
+    user?.isBanned !== true &&
+    user?.isSuspended !== true
+  );
 }
 
 async function writeAdminTestAudit(req, {
@@ -93,8 +112,7 @@ async function writeAdminTestAudit(req, {
 // Future "Test accounts" surface: lists only internal-test scoped accounts.
 router.get("/test-accounts", auth, adminGuard, async (req, res) => {
   try {
-    const conditions = getInternalTestUserConditions();
-    const users = await User.find({ $or: conditions })
+    const users = await User.find(getActiveInternalTestAccountQuery())
       .select(
         "_id email displayName username avatar accountType isInternalTest isVip vipExpiresAt tokenBalance tokenPurchased tokenEarnings tokenRedeemable tokenHeld createdAt"
       )
@@ -146,7 +164,7 @@ router.post("/test-accounts/:userId/grant-tokens", auth, adminGuard, async (req,
 
     await session.withTransaction(async () => {
       const target = await User.findById(targetUserId)
-        .select("_id email displayName isInternalTest tokenBalance tokenPurchased tokenEarnings tokenRedeemable tokenHeld")
+        .select("_id email displayName isInternalTest isDeleted deletedAt isBanned isSuspended tokenBalance tokenPurchased tokenEarnings tokenRedeemable tokenHeld")
         .session(session);
 
       if (!target) {
@@ -160,6 +178,13 @@ router.post("/test-accounts/:userId/grant-tokens", auth, adminGuard, async (req,
         const err = new Error("Test token grants are allowed only for internal test accounts");
         err.statusCode = 403;
         err.code = "TARGET_NOT_INTERNAL_TEST";
+        throw err;
+      }
+
+      if (!isActiveInternalTestAccount(target)) {
+        const err = new Error("Test token grants are allowed only for active internal test accounts");
+        err.statusCode = 403;
+        err.code = "TARGET_TEST_ACCOUNT_INACTIVE";
         throw err;
       }
 
@@ -298,7 +323,7 @@ router.post("/test-accounts/:userId/grant-vip", auth, adminGuard, async (req, re
     }
 
     const target = await User.findById(targetUserId)
-      .select("_id email displayName isInternalTest isVip vipExpiresAt vipAutoRenew vipSince")
+      .select("_id email displayName isInternalTest isDeleted deletedAt isBanned isSuspended isVip vipExpiresAt vipAutoRenew vipSince")
       .lean();
 
     if (!target) {
@@ -310,6 +335,14 @@ router.post("/test-accounts/:userId/grant-vip", auth, adminGuard, async (req, re
         status: "error",
         code: "TARGET_NOT_INTERNAL_TEST",
         message: "Test VIP grants are allowed only for internal test accounts",
+      });
+    }
+
+    if (!isActiveInternalTestAccount(target)) {
+      return res.status(403).json({
+        status: "error",
+        code: "TARGET_TEST_ACCOUNT_INACTIVE",
+        message: "Test VIP grants are allowed only for active internal test accounts",
       });
     }
 
