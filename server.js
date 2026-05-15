@@ -67,6 +67,15 @@ const authRoutes = require('./routes/auth.routes');
 
 const app = express();
 
+if (
+  String(process.env.NODE_ENV || "").toLowerCase() === "production" &&
+  !String(process.env.INTERNAL_TEST_EMAIL_BASE || "").trim()
+) {
+  console.warn(
+    "WARNING: INTERNAL_TEST_EMAIL_BASE is not set in production; Gmail alias based internal-test separation is disabled."
+  );
+}
+
 function getRequiredEnv(name) {
   const v = String(process.env[name] || "").trim();
   if (!v) throw new Error(`Missing required env: ${name}`);

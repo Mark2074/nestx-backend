@@ -9,6 +9,7 @@ const Event = require("../models/event");
 const LiveMessage = require("../models/LiveMessage");
 const User = require("../models/user");
 const { shouldHideInternalTestUser } = require("../utils/internalTestAccounts");
+const { guardPostAccessForComments } = require("./posts");
 
 const router = express.Router();
 
@@ -110,10 +111,18 @@ async function resolveReportTarget({ targetType, targetId, ctxType, ctxId, repor
       _id: targetObjectId,
       "moderation.isDeleted": { $ne: true },
     })
-      .select("_id authorId")
+      .select("_id authorId visibility isHidden moderation")
       .lean();
 
     if (!post) return null;
+    const access = await guardPostAccessForComments({
+      meId: reporter._id,
+      post,
+      viewerUser: reporter,
+      viewerAccountType: reporter?.accountType,
+    });
+    if (!access.ok) return null;
+
     const owner = await requireReportableOwner(post.authorId, reporter);
     return owner ? { targetOwnerId: owner._id } : null;
   }
@@ -132,10 +141,18 @@ async function resolveReportTarget({ targetType, targetId, ctxType, ctxId, repor
       _id: comment.postId,
       "moderation.isDeleted": { $ne: true },
     })
-      .select("_id authorId")
+      .select("_id authorId visibility isHidden moderation")
       .lean();
 
     if (!post) return null;
+    const access = await guardPostAccessForComments({
+      meId: reporter._id,
+      post,
+      viewerUser: reporter,
+      viewerAccountType: reporter?.accountType,
+    });
+    if (!access.ok) return null;
+
     const owner = await requireReportableOwner(comment.authorId, reporter);
     return owner ? { targetOwnerId: owner._id, postId: post._id } : null;
   }

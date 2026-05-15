@@ -1417,14 +1417,29 @@ router.get('/feed/following', auth, async (req, res) => {
 
         const userId = req.user._id;
 
-        const follows = await Follow.find({ followerId: userId })
+        const follows = await Follow.find({ followerId: userId, status: "accepted" })
           .select("followingId")
           .lean();
 
         const rawFollowingIds = follows.map(f => new mongoose.Types.ObjectId(f.followingId));
+        const blocks = await Block.find({
+          $or: [
+            { blockerId: userId },
+            { blockedId: userId },
+          ],
+        })
+          .select("blockerId blockedId")
+          .lean();
+
+        const blockedSet = new Set();
+        for (const block of blocks) {
+          if (String(block.blockerId) === String(userId)) blockedSet.add(String(block.blockedId));
+          if (String(block.blockedId) === String(userId)) blockedSet.add(String(block.blockerId));
+        }
+
         const isAdminViewer = String(req.user?.accountType || "").toLowerCase() === "admin";
 
-        let followingIds = rawFollowingIds;
+        let followingIds = rawFollowingIds.filter((id) => !blockedSet.has(String(id)));
 
         if (!isAdminViewer) {
           const environmentQuery = getSameEnvironmentUserQuery(req.user);
@@ -1458,6 +1473,7 @@ router.get('/feed/following', auth, async (req, res) => {
 
         const baseQuery = {
           authorId: { $in: followingIds },
+          visibility: { $in: ["public", "followers"] },
           "moderation.isDeleted": { $ne: true },
         };
 
@@ -2494,3 +2510,4 @@ router.delete("/:postId/comments/:commentId", auth, async (req, res) => {
 });
 
 module.exports = router;
+module.exports.guardPostAccessForComments = guardPostAccessForComments;
