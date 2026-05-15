@@ -8,6 +8,7 @@ const User = require("../models/user");
 const Notification = require("../models/notification");
 const AdminAuditLog = require("../models/AdminAuditLog");
 const { appendAccountTrustEvent } = require("../services/accountTrustRecordService");
+const { cancelScheduledEventsForCreator } = require("../services/eventCancellationService");
 
 function getClientIp(req) {
   const xff = req.headers["x-forwarded-for"];
@@ -273,6 +274,11 @@ router.patch("/creator/:userId/disable", auth, adminGuard, async (req, res) => {
     }
 
     if (u.creatorEnabled === false && u.payoutEnabled === false && u.payoutStatus === "disabled") {
+      const scheduledEventsCancellation = await cancelScheduledEventsForCreator({
+        creatorId: u._id,
+        reason: "CREATOR_DISABLED_BY_ADMIN",
+      });
+
       return res.status(200).json({
         status: "success",
         message: "Creator already disabled",
@@ -284,6 +290,7 @@ router.patch("/creator/:userId/disable", auth, adminGuard, async (req, res) => {
           creatorDisabledReason: u.creatorDisabledReason || disableReason,
           creatorDisabledAt: u.creatorDisabledAt || null,
           alreadyDisabled: true,
+          scheduledEventsCancellation,
         },
       });
     }
@@ -337,6 +344,11 @@ router.patch("/creator/:userId/disable", auth, adminGuard, async (req, res) => {
       payoutStatus: "disabled",
     });
 
+    const scheduledEventsCancellation = await cancelScheduledEventsForCreator({
+      creatorId: u._id,
+      reason: "CREATOR_DISABLED_BY_ADMIN",
+    });
+
     return res.status(200).json({
       status: "success",
       data: {
@@ -347,6 +359,7 @@ router.patch("/creator/:userId/disable", auth, adminGuard, async (req, res) => {
         creatorDisabledReason: u.creatorDisabledReason,
         creatorDisabledAt: u.creatorDisabledAt,
         alreadyDisabled: false,
+        scheduledEventsCancellation,
       },
     });
   } catch (err) {

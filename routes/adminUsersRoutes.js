@@ -12,6 +12,11 @@ const ProhibitedSearchLog = require("../models/ProhibitedSearchLog");
 const AgeGateLog = require("../models/ageGateLog");
 const authMiddleware = require("../middleware/authMiddleware");
 const AdminAuditLog = require("../models/AdminAuditLog");
+const { cancelScheduledEventsForCreator } = require("../services/eventCancellationService");
+const {
+  getMetricEnvironment,
+  getValidUserMetricMatch,
+} = require("../utils/adminMetricUserFilters");
 
 function getClientIp(req) {
   const xff = req.headers["x-forwarded-for"];
@@ -142,7 +147,14 @@ router.patch("/users/:userId/creator-toggle", auth, adminGuard, async (req, res)
       after
     );
 
-    return res.json({ status: "ok", user: updated });
+    const scheduledEventsCancellation = enabled
+      ? null
+      : await cancelScheduledEventsForCreator({
+          creatorId: userId,
+          reason: "CREATOR_DISABLED_BY_ADMIN",
+        });
+
+    return res.json({ status: "ok", user: updated, scheduledEventsCancellation });
   } catch (err) {
     console.error("Admin creator toggle error:", err);
     return res.status(500).json({ status: "error", message: "Internal error" });
@@ -250,7 +262,14 @@ router.patch("/users/:userId/ban", auth, adminGuard, async (req, res) => {
       after
     );
 
-    return res.json({ status: "ok", user: updated });
+    const scheduledEventsCancellation = banned
+      ? await cancelScheduledEventsForCreator({
+          creatorId: userId,
+          reason: "CREATOR_BANNED_BY_ADMIN",
+        })
+      : null;
+
+    return res.json({ status: "ok", user: updated, scheduledEventsCancellation });
   } catch (err) {
     console.error("Admin ban toggle error:", err);
     return res.status(500).json({ status: "error", message: "Internal error" });
@@ -414,23 +433,45 @@ router.get("/growth/summary", auth, adminGuard, async (req, res) => {
   try {
     const now = new Date();
     const since7d = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const environment = getMetricEnvironment(req);
+    const validUserMatch = getValidUserMetricMatch(environment);
 
     // Users
-    const totalUsersPromise = User.countDocuments({});
-    const newUsers7dPromise = User.countDocuments({ createdAt: { $gte: since7d } });
+    const totalUsersPromise = User.countDocuments(validUserMatch);
+    const newUsers7dPromise = User.countDocuments({
+      $and: [
+        validUserMatch,
+        { createdAt: { $gte: since7d } },
+      ],
+    });
 
-    const latestUsersPromise = User.find({})
+    const latestUsersPromise = User.find(validUserMatch)
       .select("displayName createdAt accountType isCreator creatorEligible payoutProvider payoutAccountId payoutStatus")
       .sort({ createdAt: -1 })
       .limit(20)
       .lean();
 
     // Activation (7d)
-    const emailVerified7dPromise = User.countDocuments({ emailVerifiedAt: { $gte: since7d } });
-    const adultConsent7dPromise = User.countDocuments({ adultConsentAt: { $gte: since7d } });
+    const emailVerified7dPromise = User.countDocuments({
+      $and: [
+        validUserMatch,
+        { emailVerifiedAt: { $gte: since7d } },
+      ],
+    });
+    const adultConsent7dPromise = User.countDocuments({
+      $and: [
+        validUserMatch,
+        { adultConsentAt: { $gte: since7d } },
+      ],
+    });
 
     // Creators
-    const totalCreatorsPromise = User.countDocuments({ isCreator: true });
+    const totalCreatorsPromise = User.countDocuments({
+      $and: [
+        validUserMatch,
+        { isCreator: true },
+      ],
+    });
 
     // "requested but not approved"
     const creatorRequestedPendingPromise = User.countDocuments({
@@ -447,7 +488,12 @@ router.get("/growth/summary", auth, adminGuard, async (req, res) => {
       ],
     });
 
-    const creatorEligiblePromise = User.countDocuments({ creatorEligible: true });
+    const creatorEligiblePromise = User.countDocuments({
+      $and: [
+        validUserMatch,
+        { creatorEligible: true },
+      ],
+    });
 
     const [
       totalUsers,
@@ -493,6 +539,7 @@ router.get("/growth/summary", auth, adminGuard, async (req, res) => {
       meta: {
         since7d,
         now,
+        environment,
       },
     });
   } catch (err) {
@@ -587,7 +634,10 @@ router.delete("/users/:id/purge", auth, adminGuard, async (req, res) => {
       Report.deleteMany({ $or: [{ targetId: targetUserId }, { targetOwnerId: targetUserId }] }),
       AccountTrustRecord.deleteMany({ userId: targetUserId }),
       ProhibitedSearchLog.deleteMany({ userId: targetUserId }),
-      AgeGateLog.deleteMany({ userId: targetUserId }),
+      AgeGateLog.updateMany(
+        { userId: targetUserId },
+        { $set: { userId: null, linkedAt: null, status: "anonymous" } }
+      ),
 
       User.updateMany({ followingIds: targetUserId }, { $pull: { followingIds: targetUserId } }),
       User.updateMany({ blockedUsers: targetUserId }, { $pull: { blockedUsers: targetUserId } }),

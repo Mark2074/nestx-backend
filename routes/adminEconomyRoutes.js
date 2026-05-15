@@ -13,6 +13,11 @@ const ActionAuditLog = require("../models/ActionAuditLog");
 const Ticket = require("../models/ticket");
 const RefundLog = require("../models/RefundLog");
 const { appendAccountTrustEvent } = require("../services/accountTrustRecordService");
+const {
+  getMetricEnvironment,
+  getValidJoinedUserMetricMatch,
+  getValidUserMetricMatch,
+} = require("../utils/adminMetricUserFilters");
 
 const {
   freezeNativePrivateHeldEvent,
@@ -24,7 +29,11 @@ const router = express.Router();
 // GET /api/admin/economy/summary (admin-only)
 router.get("/summary", auth, adminGuard, async (req, res) => {
   try {
+    const environment = getMetricEnvironment(req);
+    const validUserMatch = getValidUserMetricMatch(environment);
+
     const usersAgg = await User.aggregate([
+      { $match: validUserMatch },
       {
         $group: {
           _id: null,
@@ -38,9 +47,19 @@ router.get("/summary", auth, adminGuard, async (req, res) => {
     const redeemableTokens = usersAgg?.[0]?.redeemableTokens || 0;
     const nonRedeemableTokens = Math.max(0, circulatingTokens - redeemableTokens);
 
-    const sumTx = async (match) => {
+    const sumTx = async (match, userField = "fromUserId") => {
       const out = await TokenTransaction.aggregate([
         { $match: match },
+        {
+          $lookup: {
+            from: "users",
+            localField: userField,
+            foreignField: "_id",
+            as: "metricUser",
+          },
+        },
+        { $unwind: "$metricUser" },
+        { $match: getValidJoinedUserMetricMatch("metricUser", environment) },
         { $group: { _id: null, total: { $sum: "$amountTokens" } } },
       ]);
       return out?.[0]?.total || 0;
@@ -53,7 +72,7 @@ router.get("/summary", auth, adminGuard, async (req, res) => {
     const purchasedTokens = await sumTx({
       kind: "purchase",
       direction: "credit",
-    });
+    }, "toUserId");
 
     const paidOutTokens = await sumTx({
       kind: "payout",
@@ -69,6 +88,7 @@ router.get("/summary", auth, adminGuard, async (req, res) => {
         platformIncomeTokens,
         purchasedTokens,
         paidOutTokens,
+        environment,
       },
     });
   } catch (e) {

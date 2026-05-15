@@ -10,6 +10,7 @@ const crypto = require("crypto");
 const nodemailer = require("nodemailer");
 const AdminAuditLog = require("../models/AdminAuditLog");
 const { isInternalTestEmail } = require("../utils/internalTestAccounts");
+const { cancelScheduledEventsForCreator } = require("../services/eventCancellationService");
 
 function getClientIp(req) {
   const xff = req.headers["x-forwarded-for"];
@@ -733,10 +734,16 @@ router.delete("/account", authMiddleware, async (req, res) => {
       }
     );
 
+    const scheduledEventsCancellation = await cancelScheduledEventsForCreator({
+      creatorId: req.user._id,
+      reason: "CREATOR_ACCOUNT_DELETED",
+    });
+
     return res.json({
       status: "ok",
       message: "Account deleted request accepted.",
       deletedAt: now,
+      scheduledEventsCancellation,
     });
   } catch (err) {
     console.error("Errore DELETE /account:", err);

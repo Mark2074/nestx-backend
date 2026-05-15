@@ -18,6 +18,7 @@ const LiveMessage = require("../models/LiveMessage");
 const Ticket = require("../models/ticket");
 const { adminRefundTicketById } = require("./adminRefundRoutes");
 const { appendAccountTrustEvent } = require("../services/accountTrustRecordService");
+const { cancelScheduledEventsForCreator } = require("../services/eventCancellationService");
 
 function mapReasonCodeToLabel(reasonCode) {
   switch (String(reasonCode || "").trim()) {
@@ -613,6 +614,8 @@ router.patch("/reports/:id", auth, adminGuard, async (req, res) => {
       });
     }
 
+    let scheduledEventsCancellation = null;
+
     if (ownerId && quickAction) {
       const moderationPatch = {};
 
@@ -662,6 +665,13 @@ router.patch("/reports/:id", auth, adminGuard, async (req, res) => {
         } catch (e) {
           console.warn("Quick action audit skipped:", e?.message || e);
         }
+
+        if (quickAction === "ban") {
+          scheduledEventsCancellation = await cancelScheduledEventsForCreator({
+            creatorId: ownerId,
+            reason: "CREATOR_BANNED_BY_REPORT",
+          });
+        }
       }
     }
 
@@ -678,7 +688,7 @@ router.patch("/reports/:id", auth, adminGuard, async (req, res) => {
       );
     }
 
-    return res.status(200).json({ status: "success", data: updated });
+    return res.status(200).json({ status: "success", data: updated, scheduledEventsCancellation });
   } catch (err) {
     console.error("Admin report update error:", err);
     return res.status(500).json({ status: "error", message: "Internal error" });
@@ -977,6 +987,7 @@ router.patch("/reports/:id/creator-decision", auth, adminGuard, async (req, res)
     let ticketId = null;
     let refundApplied = false;
     let revokeApplied = false;
+    let scheduledEventsCancellation = null;
 
     if (decision === "refund" || decision === "refund_revoke_creator") {
       if (!linkedEventId || !report.reporterId) {
@@ -1041,6 +1052,11 @@ router.patch("/reports/:id/creator-decision", auth, adminGuard, async (req, res)
         console.warn("Creator revoke audit skipped:", e?.message || e);
       }
 
+      scheduledEventsCancellation = await cancelScheduledEventsForCreator({
+        creatorId: ownerId,
+        reason: "CREATOR_DISABLED_BY_REPORT",
+      });
+
       revokeApplied = true;
     }
 
@@ -1103,6 +1119,7 @@ router.patch("/reports/:id/creator-decision", auth, adminGuard, async (req, res)
     return res.json({
       status: "ok",
       data: updated,
+      scheduledEventsCancellation,
     });
   } catch (err) {
     console.error("Admin creator decision error:", err);
@@ -1244,7 +1261,14 @@ router.patch("/users/:id/moderation", auth, adminGuard, async (req, res) => {
       console.warn("AdminAuditLog skipped:", e?.message || e);
     }
 
-    return res.json({ status: "ok", data: updated });
+    const scheduledEventsCancellation = action === "ban"
+      ? await cancelScheduledEventsForCreator({
+          creatorId: userId,
+          reason: "CREATOR_BANNED_BY_ADMIN",
+        })
+      : null;
+
+    return res.json({ status: "ok", data: updated, scheduledEventsCancellation });
   } catch (err) {
     console.error("Admin user moderation error:", err);
     return res.status(500).json({ status: "error", message: "Internal error" });

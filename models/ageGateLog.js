@@ -39,4 +39,7 @@ const ageGateLogSchema = new mongoose.Schema(
   }
 );
 
+// Keep age-gate evidence long enough for abuse/safety review without retaining it indefinitely.
+ageGateLogSchema.index({ createdAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 * 365 });
+
 module.exports = mongoose.models.AgeGateLog || mongoose.model("AgeGateLog", ageGateLogSchema);

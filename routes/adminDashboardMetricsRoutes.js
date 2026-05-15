@@ -6,6 +6,11 @@ const adminGuard = require("../middleware/adminGuard");
 
 const User = require("../models/user");
 const TokenTransaction = require("../models/tokenTransaction");
+const {
+  getMetricEnvironment,
+  getValidJoinedUserMetricMatch,
+  getValidUserMetricMatch,
+} = require("../utils/adminMetricUserFilters");
 
 function startOfMonth(d = new Date()) {
   const x = new Date(d);
@@ -17,9 +22,18 @@ function startOfMonth(d = new Date()) {
 // GET /api/admin/dashboard/metrics
 router.get("/dashboard/metrics", auth, adminGuard, async (req, res) => {
   try {
-    const vipUsersActive = await User.countDocuments({ isVip: true });
+    const environment = getMetricEnvironment(req);
+    const validUserMatch = getValidUserMetricMatch(environment);
+
+    const vipUsersActive = await User.countDocuments({
+      $and: [
+        validUserMatch,
+        { isVip: true },
+      ],
+    });
 
     const sums = await User.aggregate([
+      { $match: validUserMatch },
       {
         $group: {
           _id: null,
@@ -42,6 +56,16 @@ router.get("/dashboard/metrics", auth, adminGuard, async (req, res) => {
           kind: { $in: ["vip_purchase", "adv_purchase", "showcase_charge"] },
         },
       },
+      {
+        $lookup: {
+          from: "users",
+          localField: "fromUserId",
+          foreignField: "_id",
+          as: "metricUser",
+        },
+      },
+      { $unwind: "$metricUser" },
+      { $match: getValidJoinedUserMetricMatch("metricUser", environment) },
       {
         $group: {
           _id: "$kind",
@@ -80,6 +104,7 @@ router.get("/dashboard/metrics", auth, adminGuard, async (req, res) => {
         advRevenueTokensCurrentMonth,
         showcaseRevenueTokensCurrentMonth,
         totalRevenueTokensCurrentMonth,
+        environment,
       },
     });
   } catch (e) {

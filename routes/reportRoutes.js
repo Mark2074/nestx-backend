@@ -6,6 +6,9 @@ const Notification = require("../models/notification");
 const Post = require("../models/Post");
 const Comment = require("../models/Comment");
 const Event = require("../models/event");
+const LiveMessage = require("../models/LiveMessage");
+const User = require("../models/user");
+const { shouldHideInternalTestUser } = require("../utils/internalTestAccounts");
 
 const router = express.Router();
 
@@ -79,6 +82,89 @@ async function applyAutoHideToTarget({ targetType, targetId, reasonCode, severit
   // live_message da chiudere quando mi passi il model reale
 }
 
+async function requireReportableOwner(ownerId, reporter) {
+  if (!ownerId) return null;
+
+  const owner = await User.findOne({
+    _id: ownerId,
+    isDeleted: { $ne: true },
+    isBanned: { $ne: true },
+  })
+    .select("_id email isInternalTest isDeleted isBanned")
+    .lean();
+
+  if (!owner || shouldHideInternalTestUser(owner, reporter)) return null;
+  return owner;
+}
+
+async function resolveReportTarget({ targetType, targetId, ctxType, ctxId, reporter }) {
+  const targetObjectId = new mongoose.Types.ObjectId(String(targetId));
+
+  if (targetType === "user") {
+    const owner = await requireReportableOwner(targetObjectId, reporter);
+    return owner ? { targetOwnerId: owner._id } : null;
+  }
+
+  if (targetType === "post") {
+    const post = await Post.findOne({
+      _id: targetObjectId,
+      "moderation.isDeleted": { $ne: true },
+    })
+      .select("_id authorId")
+      .lean();
+
+    if (!post) return null;
+    const owner = await requireReportableOwner(post.authorId, reporter);
+    return owner ? { targetOwnerId: owner._id } : null;
+  }
+
+  if (targetType === "comment") {
+    const comment = await Comment.findOne({
+      _id: targetObjectId,
+      isDeleted: { $ne: true },
+    })
+      .select("_id authorId postId")
+      .lean();
+
+    if (!comment) return null;
+
+    const post = await Post.findOne({
+      _id: comment.postId,
+      "moderation.isDeleted": { $ne: true },
+    })
+      .select("_id authorId")
+      .lean();
+
+    if (!post) return null;
+    const owner = await requireReportableOwner(comment.authorId, reporter);
+    return owner ? { targetOwnerId: owner._id, postId: post._id } : null;
+  }
+
+  if (targetType === "event") {
+    const event = await Event.findById(targetObjectId).select("_id creatorId status").lean();
+    if (!event) return null;
+    const owner = await requireReportableOwner(event.creatorId, reporter);
+    return owner ? { targetOwnerId: owner._id, eventId: event._id } : null;
+  }
+
+  if (targetType === "live_message") {
+    const message = await LiveMessage.findById(targetObjectId)
+      .select("_id userId eventId")
+      .lean();
+
+    if (!message) return null;
+    if (ctxType === "live" && ctxId && String(message.eventId) !== String(ctxId)) return null;
+
+    const event = await Event.findById(message.eventId).select("_id creatorId").lean();
+    if (!event) return null;
+
+    const owner = await requireReportableOwner(message.userId, reporter);
+    return owner ? { targetOwnerId: owner._id, eventId: event._id } : null;
+  }
+
+  return null;
+}
+
 router.post("/", authMiddleware, async (req, res) => {
   try {
     const { targetType, targetId, reasonCode, note, contextType, contextId } = req.body;
@@ -92,7 +178,9 @@ router.post("/", authMiddleware, async (req, res) => {
     }
 
     const allowedTargetTypes = ["user", "post", "event", "comment", "live_message"];
-    if (!allowedTargetTypes.includes(String(targetType))) {
+    const safeTargetType = String(targetType);
+
+    if (!allowedTargetTypes.includes(safeTargetType)) {
       return res.status(400).json({
         status: "error",
         code: "INVALID_TARGET_TYPE",
@@ -136,12 +224,28 @@ router.post("/", authMiddleware, async (req, res) => {
       });
     }
 
-    const classification = classifyReportReason(String(targetType), String(reasonCode));
+    const classification = classifyReportReason(safeTargetType, String(reasonCode));
     if (!classification) {
       return res.status(400).json({
         status: "error",
         code: "INVALID_REASON_CODE",
         message: "Invalid reasonCode",
+      });
+    }
+
+    const resolvedTarget = await resolveReportTarget({
+      targetType: safeTargetType,
+      targetId,
+      ctxType,
+      ctxId,
+      reporter: req.user,
+    });
+
+    if (!resolvedTarget) {
+      return res.status(404).json({
+        status: "error",
+        code: "TARGET_NOT_FOUND",
+        message: "Report target not found",
       });
     }
 
@@ -161,7 +265,7 @@ router.post("/", authMiddleware, async (req, res) => {
 
     const filter = {
       reporterId: req.user._id,
-      targetType: String(targetType),
+      targetType: safeTargetType,
       targetId: new mongoose.Types.ObjectId(String(targetId)),
       contextType: ctxType || null,
       contextId: ctxType ? new mongoose.Types.ObjectId(String(ctxId)) : null,
@@ -172,7 +276,7 @@ router.post("/", authMiddleware, async (req, res) => {
       filter,
       {
         $set: {
-          targetType: String(targetType),
+          targetType: safeTargetType,
           targetId: new mongoose.Types.ObjectId(String(targetId)),
           reporterId: req.user._id,
           source: "user",
@@ -191,9 +295,7 @@ router.post("/", authMiddleware, async (req, res) => {
           contextType: ctxType || null,
           contextId: ctxType ? new mongoose.Types.ObjectId(String(ctxId)) : null,
 
-          targetOwnerId: String(targetType) === "user"
-            ? new mongoose.Types.ObjectId(String(targetId))
-            : null,
+          targetOwnerId: resolvedTarget.targetOwnerId || null,
         },
       },
       {
@@ -204,11 +306,11 @@ router.post("/", authMiddleware, async (req, res) => {
     );
 
     if (
-      ["post", "comment", "live_message"].includes(String(targetType)) &&
+      ["post", "comment", "live_message"].includes(safeTargetType) &&
       classification.shouldAutoHideContent
     ) {
       await applyAutoHideToTarget({
-        targetType: String(targetType),
+        targetType: safeTargetType,
         targetId: new mongoose.Types.ObjectId(String(targetId)),
         reasonCode: String(reasonCode),
         severity: classification.severity,
@@ -221,13 +323,13 @@ router.post("/", authMiddleware, async (req, res) => {
         userId: null,
         actorId: req.user._id,
         type: "ADMIN_REPORT_PENDING",
-        targetType: String(targetType),
+        targetType: safeTargetType,
         targetId: String(targetId),
-        message: `New report (${targetType}${ctxType === "live" ? " in live" : ""}): ${REASON_LABELS[String(reasonCode)] || String(reasonCode)}`,
+        message: `New report (${safeTargetType}${ctxType === "live" ? " in live" : ""}): ${REASON_LABELS[String(reasonCode)] || String(reasonCode)}`,
         data: {
           reportId: String(report._id),
           reporterId: String(req.user._id),
-          targetType: String(targetType),
+          targetType: safeTargetType,
           targetId: String(targetId),
           reasonCode: String(reasonCode),
           reason: REASON_LABELS[String(reasonCode)] || String(reasonCode),

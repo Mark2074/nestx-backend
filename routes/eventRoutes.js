@@ -23,6 +23,7 @@ const Adv = require("../models/adv");
 const { detectContentSafety } = require("../utils/contentSafety");
 const { resetRuntimeForScope } = require("../services/liveRuntimeService");
 const { chargeUserToCreator } = require("../services/livePaymentService");
+const { cancelScheduledEventWithRefund } = require("../services/eventCancellationService");
 const {
   getOppositeEnvironmentUserQuery,
   isAdminViewer,
@@ -2431,418 +2432,38 @@ router.post("/:id/cancel", auth, featureGuard("live"), async (req, res) => {
       });
     }
 
-    const eventId = req.params.id;
+    const result = await cancelScheduledEventWithRefund({
+      eventId: req.params.id,
+      requireCreatorId: user._id,
+      reason: "EVENT_CANCELLED",
+    });
 
-    if (!eventId || eventId.length < 10) {
-      return res.status(400).json({
-        status: "error",
-        message: "Invalid event ID",
-      });
-    }
-
-    const event = await Event.findById(eventId).exec();
-
-    if (!event) {
-      return res.status(404).json({
-        status: "error",
-        message: "Event not found",
-      });
-    }
-
-    // Solo il creator può cancellare
-    if (event.creatorId.toString() !== user._id.toString()) {
-      return res.status(403).json({
-        status: "error",
-        message: "Only host of the event can cancel it",
-      });
-    }
-
-    // Se è già cancellato, NON facciamo nulla (idempotente)
-    if (event.status === "cancelled") {
+    if (result.alreadyCancelled) {
       return res.status(200).json({
         status: "success",
         message: "Event already cancelled, no additional refund executed",
         data: {
-          eventId: event._id,
-          status: event.status,
+          eventId: result.eventId,
+          status: result.status,
         },
       });
-    }
-
-    // NON permettiamo di cancellare eventi già iniziati o terminati
-    if (event.status !== "scheduled") {
-      return res.status(400).json({
-        status: "error",
-        message:
-          "You can't cancel an event that has already started or ended. Use finish to close it.",
-        data: {
-          eventId: event._id,
-          status: event.status,
-        },
-      });
-    }
-
-    // 1️⃣ CANCEL + REFUND (ATOMICO via session.withTransaction)
-    const session = await mongoose.startSession();
-
-    let activeTickets = [];
-    let refundMap = new Map(); // userId(string) -> refundAmount(number)
-    let totalRefundedTokens = 0;
-    let refundedUsersCount = 0;
-
-    try {
-      await session.withTransaction(async () => {
-        // (A) ricarico evento in sessione
-        const eventTx = await Event.findById(eventId).session(session).exec();
-        if (!eventTx) {
-          const err = new Error("Event not found");
-          err.httpStatus = 404;
-          err.payload = { status: "error", message: "Event not found" };
-          throw err;
-        }
-
-        // idempotente dentro TX
-        if (eventTx.status === "cancelled") {
-          return;
-        }
-
-        if (eventTx.status !== "scheduled") {
-          const err = new Error("You can't cancel an event that has already started or ended");
-          err.httpStatus = 400;
-          err.payload = {
-            status: "error",
-            message: "You can't cancel an event that has already started or ended. Use finish to close it.",
-            data: { eventId: eventTx._id, status: eventTx.status },
-          };
-          throw err;
-        }
-
-        // (B) ticket attivi
-        activeTickets = await Ticket.find({ eventId: eventTx._id, status: "active" })
-          .session(session)
-          .exec();
-
-        // Nessun ticket → annullo solo evento
-        if (activeTickets.length === 0) {
-          eventTx.status = "cancelled";
-          eventTx.totalTokensEarned = 0;
-          eventTx.creatorShareTokens = 0;
-          eventTx.platformShareTokens = 0;
-          await eventTx.save({ session });
-
-          refundedUsersCount = 0;
-          totalRefundedTokens = 0;
-          refundMap = new Map();
-          return;
-        }
-
-        // (C) calcolo refund per utente
-        refundMap = new Map();
-        totalRefundedTokens = 0;
-
-        for (const ticket of activeTickets) {
-          const userIdStr = ticket.userId.toString();
-          const amount = Number(ticket.priceTokens) || 0;
-          const prev = refundMap.get(userIdStr) || 0;
-          refundMap.set(userIdStr, prev + amount);
-          totalRefundedTokens += amount;
-        }
-
-        const userIds = Array.from(refundMap.keys());
-        refundedUsersCount = userIds.length;
-
-        const now = new Date();
-
-        // (D) refund ticket-by-ticket con ripristino bucket reale
-        for (const ticket of activeTickets) {
-          const buyerId = ticket.userId;
-          const creatorId = eventTx.creatorId;
-          const amount = Number(ticket.priceTokens || 0);
-
-          if (!(amount > 0)) {
-            ticket.status = "refunded";
-            ticket.refundedAt = now;
-            await ticket.save({ session });
-            continue;
-          }
-
-          const ticketScope = String(ticket.scope || "public");
-          const ticketRoomId = ticket.roomId || null;
-          const refundOpId = `refund_${String(ticket._id)}`;
-
-          const existingRefund = await TokenTransaction.findOne({
-            opId: refundOpId,
-            kind: "ticket_refund",
-            direction: "credit",
-            fromUserId: creatorId,
-            toUserId: buyerId,
-            eventId: eventTx._id,
-            scope: ticketScope,
-            roomId: ticketRoomId,
-          }).session(session);
-
-          const alreadyRefundedByTicket = String(ticket.status) === "refunded";
-          const alreadyRefunded = alreadyRefundedByTicket || !!existingRefund;
-
-          if (!alreadyRefunded) {
-            const origDebit = await TokenTransaction.findOne({
-              kind: "ticket_purchase",
-              direction: "debit",
-              eventId: eventTx._id,
-              scope: ticketScope,
-              roomId: ticketRoomId,
-              fromUserId: buyerId,
-              toUserId: creatorId,
-              amountTokens: amount,
-            })
-              .sort({ createdAt: -1 })
-              .session(session);
-
-            const buyerBuckets = (origDebit?.metadata && origDebit.metadata.buyerBuckets) || null;
-            const usedFromEarnings = Number(buyerBuckets?.earnings || 0);
-            const usedFromRedeemable = Number(buyerBuckets?.redeemable || 0);
-
-            const creatorBucketRaw = String(origDebit?.metadata?.creatorBucket || "").trim().toLowerCase();
-
-            let creatorBucket = "earnings";
-            if (creatorBucketRaw === "redeemable") creatorBucket = "redeemable";
-            else if (creatorBucketRaw === "held") creatorBucket = "held";
-
-            // refund buyer
-            const incBuyer = { tokenBalance: amount };
-            if (usedFromEarnings > 0) incBuyer.tokenEarnings = usedFromEarnings;
-            if (usedFromRedeemable > 0) incBuyer.tokenRedeemable = usedFromRedeemable;
-
-            await User.updateOne(
-              { _id: buyerId },
-              { $inc: incBuyer },
-              { session }
-            );
-
-            // reverse creator
-            const decCreator = { tokenBalance: -amount };
-            if (creatorBucket === "redeemable") decCreator.tokenRedeemable = -amount;
-            else if (creatorBucket === "held") decCreator.tokenHeld = -amount;
-            else decCreator.tokenEarnings = -amount;
-
-            await User.updateOne(
-              { _id: creatorId },
-              { $inc: decCreator },
-              { session }
-            );
-
-            const refundGroupId = `grp_${crypto.randomUUID()}`;
-
-            await TokenTransaction.insertMany(
-              [
-                {
-                  opId: refundOpId,
-                  groupId: refundGroupId,
-                  fromUserId: creatorId,
-                  toUserId: buyerId,
-                  kind: "ticket_refund",
-                  direction: "credit",
-                  context: "ticket",
-                  contextId: String(eventTx._id),
-                  amountTokens: amount,
-                  amountEuro: 0,
-                  eventId: eventTx._id,
-                  scope: ticketScope,
-                  roomId: ticketRoomId,
-                  metadata: {
-                    reason: "EVENT_CANCELLED",
-                    originalTicketId: ticket._id,
-                    originalOpId: origDebit?.opId || null,
-                    buyerBuckets: {
-                      earnings: usedFromEarnings,
-                      redeemable: usedFromRedeemable,
-                    },
-                    creatorBucket,
-                  },
-                },
-                {
-                  opId: refundOpId,
-                  groupId: refundGroupId,
-                  fromUserId: creatorId,
-                  toUserId: buyerId,
-                  kind: "ticket_refund",
-                  direction: "debit",
-                  context: "ticket",
-                  contextId: String(eventTx._id),
-                  amountTokens: amount,
-                  amountEuro: 0,
-                  eventId: eventTx._id,
-                  scope: ticketScope,
-                  roomId: ticketRoomId,
-                  metadata: {
-                    reason: "EVENT_CANCELLED",
-                    originalTicketId: ticket._id,
-                    originalOpId: origDebit?.opId || null,
-                  },
-                },
-              ],
-              { session, ordered: true }
-            );
-          }
-
-          ticket.status = "refunded";
-          ticket.refundedAt = now;
-          await ticket.save({ session });
-        }
-
-        // (G) cancel event + zero economics
-        eventTx.status = "cancelled";
-        eventTx.totalTokensEarned = 0;
-        eventTx.creatorShareTokens = 0;
-        eventTx.platformShareTokens = 0;
-
-        if (isNativePrivateEvent(eventTx)) {
-          if (!eventTx.privateSession) eventTx.privateSession = {};
-          eventTx.privateSession.economicStatus = "refunded";
-          eventTx.privateSession.economicHeldTokens = 0;
-          eventTx.privateSession.economicRefundedAt = now;
-          eventTx.privateSession.economicResolutionReason = "EVENT_CANCELLED";
-        }
-
-        await eventTx.save({ session });
-      });
-
-    } catch (e) {
-      if (e && e.httpStatus && e.payload) {
-        return res.status(e.httpStatus).json(e.payload);
-      }
-      console.error("EVENT_CANCEL_TX_FAILED", { msg: e?.message, name: e?.name, code: e?.code });
-      throw e;
-    } finally {
-      session.endSession();
-    }
-
-    try {
-      await resetRuntimeForScope({
-        eventId: event._id,
-        scope: "public",
-        endedAt: new Date(),
-        roomStatus: "ended",
-        clearPresence: true,
-        privateSessionCounter: null,
-      });
-
-      const privateCounter = Number(event?.privateSessionCounter || 0);
-
-      if (event?.privateSession?.roomId || event?.accessScope === "private") {
-        await resetRuntimeForScope({
-          eventId: event._id,
-          scope: "private",
-          endedAt: new Date(),
-          roomStatus: "ended",
-          clearPresence: true,
-          privateSessionCounter: privateCounter,
-        });
-      }
-    } catch (e) {
-      console.error("RESET_RUNTIME_ON_CANCEL_FAILED", e?.message || e);
-    }
-
-    // 🔻 Disable any ADV linked to this event (best-effort)
-    try {
-      await Adv.updateMany(
-        { targetType: "event", targetId: event._id, isActive: true },
-        { $set: { isActive: false } }
-      );
-    } catch (e) {
-      console.error("ADV_DISABLE_ON_CANCEL_FAILED", e?.message || e);
-    }
-
-    // =========================
-    //  NOTIF: REFUND (BEST-EFFORT + DEDUPE)
-    // =========================
-    try {
-      const userIds = Array.from(refundMap.keys());
-
-      for (const uid of userIds) {
-        const refundAmount = refundMap.get(uid) || 0;
-        if (!refundAmount) continue;
-
-        const dedupeKey = `ticket_refunded:${event._id.toString()}:${uid}`;
-
-        await Notification.updateOne(
-          { dedupeKey },
-          {
-            $setOnInsert: {
-              userId: uid,
-              actorId: event.creatorId,
-              type: "TICKET_REFUNDED",
-              targetType: "event",
-              targetId: event._id,
-              message: `Ticket refund: +${refundAmount} tokens`,
-              isPersistent: true,
-              data: {
-                eventId: event._id,
-                amountTokens: refundAmount,
-                refundedAt: new Date(),
-              },
-              dedupeKey,
-            },
-          },
-          { upsert: true }
-        );
-      }
-    } catch (e) {
-      console.error("REFUND_NOTIFICATIONS_FAILED", e?.message || e);
-    }
-
-    // =========================
-    //  NOTIF: EVENT_CANCELLED (BEST-EFFORT + DEDUPE)
-    // =========================
-    try {
-      if (activeTickets.length > 0) {
-        const uniqueUserIds = Array.from(
-          new Set(activeTickets.map(t => t.userId?.toString()).filter(Boolean))
-        );
-
-        if (uniqueUserIds.length > 0) {
-          const notifOps = uniqueUserIds.map((uid) => ({
-            updateOne: {
-              filter: { dedupeKey: `event_cancelled:${event._id.toString()}:${uid}` },
-              update: {
-                $setOnInsert: {
-                  userId: uid,
-                  actorId: event.creatorId,           // host che cancella
-                  type: "EVENT_CANCELLED",
-                  targetType: "event",
-                  targetId: event._id,
-                  message: "An event you have a ticket for has been cancelled",
-                  isPersistent: false,
-                  data: {
-                    eventId: event._id,
-                    cancelledAt: new Date(),
-                  },
-                  dedupeKey: `event_cancelled:${event._id.toString()}:${uid}`,
-                },
-              },
-              upsert: true,
-            },
-          }));
-
-          await Notification.bulkWrite(notifOps, { ordered: false });
-        }
-      }
-    } catch (e) {
-      console.error("NOTIFICATION_EVENT_CANCELLED_FAILED", e?.message || e);
-      // NON bloccare cancel
     }
 
     return res.status(200).json({
       status: "success",
       message: "Event cancelled and tokens refunded to participants",
       data: {
-        eventId: event._id,
-        status: event.status,
-        refundedUsersCount,
-        totalRefundedTokens,
+        eventId: result.eventId,
+        status: result.status,
+        refundedUsersCount: result.refundedUsersCount,
+        totalRefundedTokens: result.totalRefundedTokens,
       },
     });
   } catch (err) {
+    if (err?.httpStatus && err?.payload) {
+      return res.status(err.httpStatus).json(err.payload);
+    }
+
     console.error("Error during event cancellation with refund:", err);
     return res.status(500).json({
       status: "error",
@@ -2850,7 +2471,6 @@ router.post("/:id/cancel", auth, featureGuard("live"), async (req, res) => {
     });
   }
 });
-
 /**
  * @route   POST /api/events/:id/mute-viewer
  * @desc    Muta la chat per uno spettatore in questo evento
