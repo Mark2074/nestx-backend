@@ -100,6 +100,13 @@ router.get("/search", auth, async (req, res) => {
   try {
     const me = req.user;
     const contentScope = req.query.contentScope ? String(req.query.contentScope).trim().toUpperCase() : null;
+    const requestedCategories = String(req.query.categories || "")
+      .split(",")
+      .map((item) => item.trim().toLowerCase())
+      .filter(Boolean);
+    const requestedCategorySet = Array.from(new Set(requestedCategories));
+    const requestedSfwCategories = requestedCategorySet.filter((item) => item !== "nsfw");
+    const requestedIncludesNsfw = requestedCategorySet.includes("nsfw");
     const isAdmin = String(me?.accountType || "").toLowerCase() === "admin";
 
     // VIP = status boolean (come deciso)
@@ -204,8 +211,21 @@ router.get("/search", auth, async (req, res) => {
         ? { $in: creatorBaseObjIds, $nin: finalExcludedObjIds }
         : { $nin: finalExcludedObjIds },
     };
+    const andParts = [];
 
-    if (contentScope === "HOT" || contentScope === "NO_HOT") {
+    if (requestedCategorySet.length) {
+      if (requestedIncludesNsfw && requestedSfwCategories.length) {
+        query.$or = [
+          { contentScope: "HOT" },
+          { contentScope: "NO_HOT", category: { $in: requestedSfwCategories } },
+        ];
+      } else if (requestedIncludesNsfw) {
+        query.contentScope = "HOT";
+      } else {
+        query.contentScope = "NO_HOT";
+        query.category = { $in: requestedSfwCategories };
+      }
+    } else if (contentScope === "HOT" || contentScope === "NO_HOT") {
       query.contentScope = contentScope;
     }
 
@@ -217,12 +237,19 @@ router.get("/search", auth, async (req, res) => {
     // q = title / description / category / creator name
     if (q) {
       const rx = new RegExp(escapeRegex(q), "i");
-      query.$or = [
+      const searchOr = [
         { title: rx },
         { description: rx },
         { category: rx },
         ...(creatorQObjIds.length ? [{ creatorId: { $in: creatorQObjIds } }] : []),
       ];
+
+      if (query.$or) {
+        andParts.push({ $or: query.$or });
+        delete query.$or;
+      }
+
+      andParts.push({ $or: searchOr });
     }
 
     // -------------------------
@@ -232,8 +259,6 @@ router.get("/search", auth, async (req, res) => {
     // - public sempre
     // - followers solo se follow accepted
     // - i miei eventi: ok (public/followers), ma mai unlisted
-    const andParts = [];
-
     andParts.push(
       { visibility: { $ne: "unlisted" } },
       {

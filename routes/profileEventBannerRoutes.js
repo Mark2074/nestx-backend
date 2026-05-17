@@ -70,21 +70,12 @@ router.get("/event-banner/:userId", auth, async (req, res) => {
 
     const now = Date.now();
 
-    const totalByCreator = await Event.countDocuments({ creatorId: targetUserId });
-
-    const totalScheduledLive = await Event.countDocuments({
-      creatorId: targetUserId,
-      status: { $in: ["scheduled", "live"] },
-      contentScope: "NO_HOT",
-    });
-
     // prendiamo eventi "candidati" dell'utente:
     // scheduled + live (finished/cancelled NON ci servono per mostrarlo)
 
     const candidates = await Event.find({
       creatorId: targetUserId,
       status: { $in: ["scheduled", "live"] },
-      contentScope: "NO_HOT",
     })
       .sort({ plannedStartTime: 1, startTime: 1 })
       .populate("creatorId", "displayName username avatar avatarUrl")
