@@ -679,6 +679,13 @@ router.post("/", auth, featureGuard("live"), async (req, res) => {
       });
     }
 
+    if (contentScopeRaw === "HOT" && safeCategory && !["nsfw", "general"].includes(safeCategory)) {
+      return res.status(400).json({
+        status: "error",
+        message: "Invalid HOT event category",
+      });
+    }
+
     // ✅ business rules:
     // NO_HOT può nascere SOLO private + paid
     if (contentScopeRaw === "NO_HOT" && safeAccessScope !== "private") {
@@ -729,7 +736,7 @@ router.post("/", auth, featureGuard("live"), async (req, res) => {
       creatorId: user._id,
       title: safeTitle,
       description: safeDescription,
-      category: contentScopeRaw === "NO_HOT" ? safeCategory : "general",
+      category: contentScopeRaw === "HOT" ? "nsfw" : safeCategory,
       language: (language ? String(language) : (safeLang || "it")).trim().toLowerCase(),
       area: safeArea,
       targetProfileType: safeProfileType,
