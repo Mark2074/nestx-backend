@@ -16,7 +16,7 @@ const TrustEventSchema = new mongoose.Schema(
       required: true,
     },
     reportId: { type: mongoose.Schema.Types.ObjectId, ref: "Report", default: null },
-    targetType: { type: String, enum: ["user", "post", "event"], required: true },
+    targetType: { type: String, enum: ["user", "post", "event", "comment", "live_message"], required: true },
     targetId: { type: mongoose.Schema.Types.ObjectId, required: true },
     severity: { type: String, enum: ["grave", "gravissimo"], default: null },
     category: { type: String, default: null },

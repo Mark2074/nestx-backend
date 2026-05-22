@@ -288,7 +288,7 @@ router.patch("/reports/:id", auth, adminGuard, async (req, res) => {
       }
     }
 
-    // HIDE POST when hidden (Phase 1 rule)
+    // HIDE COMMENT when hidden: scope is the reported comment only.
     if (
       existing.targetType === "comment" &&
       existing.targetId &&
@@ -299,9 +299,10 @@ router.patch("/reports/:id", auth, adminGuard, async (req, res) => {
           { _id: existing.targetId },
           {
             $set: {
-              "moderation.status": "under_review",
+              "moderation.status": "hidden",
               "moderation.hiddenBy": "admin",
               "moderation.hiddenAt": new Date(),
+              "moderation.hiddenByAdminId": req.user._id,
             },
           }
         );

@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "test": "echo \"Error: no test specified\" && exit 1",
-    "check:internal-test": "node utils/internalTestAccounts.check.js"
+    "check:internal-test": "node utils/internalTestAccounts.check.js",
+    "check:admin-report-scope": "node utils/adminReportModerationScope.check.js"
   },
   
   "keywords": [],
