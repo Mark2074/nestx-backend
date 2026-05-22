@@ -9,6 +9,7 @@ const User = require("../models/user");
 const Event = require("../models/event");
 const Follow = require("../models/Follow");
 const { getBlockedUserIds } = require("../utils/blockUtils");
+const getMutedUserIds = require("../utils/getMutedUserIds");
 const { getOppositeEnvironmentUserQuery } = require("../utils/internalTestAccounts");
 
 /**
@@ -139,14 +140,20 @@ router.get("/search", auth, async (req, res) => {
     const allowedProfileTypes = ["male", "female", "couple", "gay", "trans"];
     const safeProfileType = allowedProfileTypes.includes(profileType) ? profileType : null;
 
-    const excludedUserIds = await buildExcludedUserIds(meObjId, { isAdmin, viewerUser: me });
+    const [excludedUserIds, mutedUserIds] = await Promise.all([
+      buildExcludedUserIds(meObjId, { isAdmin, viewerUser: me }),
+      getMutedUserIds(meObjId),
+    ]);
     const excludedObjIds = excludedUserIds.map((id) => new mongoose.Types.ObjectId(id));
+    const mutedObjIds = mutedUserIds
+      .filter((id) => mongoose.Types.ObjectId.isValid(String(id)))
+      .map((id) => new mongoose.Types.ObjectId(String(id)));
 
     const adminUsers = await User.find({ accountType: "admin" }).select("_id").lean();
     const adminObjIds = adminUsers.map((u) => new mongoose.Types.ObjectId(String(u._id)));
 
     const finalExcludedObjIds = Array.from(
-      new Set([...excludedObjIds.map(String), ...adminObjIds.map(String)])
+      new Set([...excludedObjIds.map(String), ...mutedObjIds.map(String), ...adminObjIds.map(String)])
     ).map((id) => new mongoose.Types.ObjectId(id));
 
     const acceptedFollowingObjIds = await getAcceptedFollowingObjIds(meObjId);

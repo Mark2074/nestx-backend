@@ -1768,7 +1768,7 @@ router.get("/feed/following-mixed", auth, async (req, res) => {
         const authorId = it?.data?.authorId?._id || it?.data?.authorId;
         return !mutedSet.has(String(authorId));
       }
-      if (it?.type === "event") {
+      if (it?.type === "event" || it?.type === "event_scheduled") {
         const creatorId = it?.data?.creatorId?._id || it?.data?.creatorId;
         return !mutedSet.has(String(creatorId));
       }

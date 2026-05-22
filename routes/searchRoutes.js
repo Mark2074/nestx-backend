@@ -407,7 +407,6 @@ router.get("/search", auth, async (req, res) => {
       }
 
       postQuery.isHidden = { $ne: true };
-      postQuery["moderation.status"] = { $ne: "hidden" };
 
       posts = await Post.find(postQuery)
         .select("-area -language") // non esportare
