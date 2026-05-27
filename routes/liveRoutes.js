@@ -1157,12 +1157,17 @@ router.post("/:eventId/stop-media", auth, featureGuard("live"), async (req, res)
     }
 
     const base = requestedScope === "private" ? "privateSession" : "live";
+    const now = new Date();
+    const graceExpiresAt = new Date(now.getTime() + HOST_DISCONNECT_GRACE_MS);
 
     await Event.updateOne(
       { _id: event._id },
       {
         $set: {
           [`${base}.hostMediaStatus`]: "idle",
+          [`${base}.hostDisconnectState`]: "grace",
+          [`${base}.hostDisconnectGraceStartedAt`]: now,
+          [`${base}.hostDisconnectGraceExpiresAt`]: graceExpiresAt,
           [`${base}.playbackUrl`]: null,
         },
       }
@@ -1174,6 +1179,8 @@ router.post("/:eventId/stop-media", auth, featureGuard("live"), async (req, res)
         eventId: String(event._id),
         scope: requestedScope,
         hostMediaStatus: "idle",
+        hostGraceActive: true,
+        hostGraceExpiresAt: graceExpiresAt,
       },
     });
   } catch (err) {
