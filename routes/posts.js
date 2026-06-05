@@ -35,6 +35,7 @@ const {
 const {
   shouldHidePublicSocialUser,
 } = require("../utils/publicSocialUser");
+const { extractMentionUsernames } = require("../utils/mentions");
 
 const { execFile } = require("child_process");
 const ffprobePath = require("ffprobe-static")?.path;
@@ -500,6 +501,75 @@ async function guardPostAccessForComments({ meId, post, viewerUser = null, viewe
   return { ok: true, isOwner };
 }
 
+async function createPostMentionNotifications({ actorId, postId, text }) {
+  const usernames = extractMentionUsernames(text);
+  console.log("NOTIF_POST_MENTION_DEBUG extracted", {
+    postId: String(postId || ""),
+    actorId: String(actorId || ""),
+    extractedUsernamesCount: usernames.length,
+  });
+  if (!usernames.length) return;
+
+  const actorIdString = String(actorId || "");
+  const mentionedUsers = await User.find({ username: { $in: usernames } })
+    .select("_id username")
+    .lean();
+  console.log("NOTIF_POST_MENTION_DEBUG resolved", {
+    postId: String(postId || ""),
+    actorId: actorIdString,
+    resolvedTargetUsersCount: mentionedUsers.length,
+  });
+
+  const ops = mentionedUsers
+    .filter((targetUser) => String(targetUser?._id || "") !== actorIdString)
+    .map((targetUser) => {
+      const targetUserId = String(targetUser._id);
+      const postIdString = String(postId);
+      const dedupeKey = `mention:post:${postIdString}:${targetUserId}`;
+
+      return {
+        updateOne: {
+          filter: { dedupeKey },
+          update: {
+            $setOnInsert: {
+              userId: targetUser._id,
+              actorId,
+              type: "SOCIAL_MENTION",
+              targetType: "post",
+              targetId: postId,
+              message: "You were mentioned in a post",
+              data: {
+                postId: postIdString,
+                username: targetUser.username,
+                preview: String(text || "").slice(0, 120),
+              },
+              isPersistent: false,
+              dedupeKey,
+            },
+          },
+          upsert: true,
+        },
+      };
+    });
+  console.log("NOTIF_POST_MENTION_DEBUG ops", {
+    postId: String(postId || ""),
+    actorId: actorIdString,
+    opsCount: ops.length,
+  });
+
+  if (ops.length) {
+    const result = await Notification.bulkWrite(ops, { ordered: false });
+    console.log("NOTIF_POST_MENTION_DEBUG bulkWrite", {
+      postId: String(postId || ""),
+      actorId: actorIdString,
+      insertedCount: result?.insertedCount || 0,
+      upsertedCount: result?.upsertedCount || 0,
+      modifiedCount: result?.modifiedCount || 0,
+      matchedCount: result?.matchedCount || 0,
+    });
+  }
+}
+
 /**
  * POST /posts
  * Creazione di un nuovo post
@@ -754,6 +824,38 @@ router.post("/", auth, async (req, res) => {
     });
 
     await post.save();
+
+    const mentionPostIsVisible =
+      post?.isHidden !== true &&
+      post?.moderation?.isDeleted !== true &&
+      post?.moderation?.status === "visible";
+    console.log("NOTIF_POST_MENTION_DEBUG gate", {
+      postId: String(post._id || ""),
+      authorId: String(req.user._id || ""),
+      initialModerationStatus,
+      savedModerationStatus: String(post?.moderation?.status || ""),
+      hasText: !!trimmedText,
+      mentionPostIsVisible,
+    });
+
+    if (trimmedText && mentionPostIsVisible) {
+      try {
+        await createPostMentionNotifications({
+          actorId: req.user._id,
+          postId: post._id,
+          text: trimmedText,
+        });
+      } catch (e) {
+        console.error("NOTIF_POST_MENTION_FAILED:", e?.message || e);
+      }
+    } else {
+      console.log("NOTIF_POST_MENTION_DEBUG skipped", {
+        postId: String(post._id || ""),
+        authorId: String(req.user._id || ""),
+        hasText: !!trimmedText,
+        mentionPostIsVisible,
+      });
+    }
 
     if (aiModeration.flagged && aiSuggestedSeverity === "gravissimo") {
       await createOrUpdateAIReport({
