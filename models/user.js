@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { normalizeUsername, validateUsername } = require("../utils/username");
 
 const userSchema = new mongoose.Schema(
   {
@@ -18,6 +19,21 @@ const userSchema = new mongoose.Schema(
       type: String,
       required: true,
       trim: true,
+    },
+    username: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      set(value) {
+        return normalizeUsername(value) || undefined;
+      },
+      validate: {
+        validator(value) {
+          if (value == null || value === "") return true;
+          return validateUsername(value).ok;
+        },
+        message: "Invalid username",
+      },
     },
     // --- AGE GATE / MINORI ---
     dateOfBirth: {
@@ -342,6 +358,14 @@ const userSchema = new mongoose.Schema(
   },
   {
     versionKey: false,
+  }
+);
+
+userSchema.index(
+  { username: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { username: { $type: "string" } },
   }
 );
 

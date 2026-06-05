@@ -2,6 +2,7 @@ const express = require('express');
 const authMiddleware = require("../middleware/authMiddleware");
 const User = require('../models/user');
 const AgeGateLog = require("../models/ageGateLog");
+const mongoose = require("mongoose");
 
 const router = express.Router();
 const jwt = require('jsonwebtoken');
@@ -11,6 +12,7 @@ const nodemailer = require("nodemailer");
 const AdminAuditLog = require("../models/AdminAuditLog");
 const { isInternalTestEmail } = require("../utils/internalTestAccounts");
 const { cancelScheduledEventsForCreator } = require("../services/eventCancellationService");
+const { usernameBaseFromDisplayName } = require("../utils/username");
 
 function getClientIp(req) {
   const xff = req.headers["x-forwarded-for"];
@@ -236,6 +238,29 @@ function isValidEmailFormat(value) {
   return emailRegex.test(email);
 }
 
+async function buildUniqueUsername({ displayName, userId }) {
+  const fallback = `user_${String(userId).slice(-8)}`;
+  const base = usernameBaseFromDisplayName(displayName) || fallback;
+
+  for (let i = 0; i < 100; i += 1) {
+    const suffix = i === 0 ? "" : `_${i + 1}`;
+    const maxBaseLength = 30 - suffix.length;
+    const candidate = `${base.slice(0, maxBaseLength)}${suffix}`;
+    const exists = await User.exists({ username: candidate });
+
+    if (!exists) return candidate;
+  }
+
+  return fallback;
+}
+
+function isDuplicateUsernameKeyError(err) {
+  return (
+    err?.code === 11000 &&
+    (err?.keyPattern?.username === 1 || Object.prototype.hasOwnProperty.call(err?.keyValue || {}, "username"))
+  );
+}
+
 function hasExpiredEmailVerification(user, now = new Date()) {
   if (!user || user.emailVerifiedAt) return false;
   if (user.isDeleted === true || user.isBanned === true) return false;
@@ -431,11 +456,19 @@ router.post('/register', async (req, res) => {
     const bioNorm = String(bio || "").trim();
     const languageNorm = String(language || "").trim().toLowerCase();
 
-    const newUser = await User.create({
+    const newUserId = new mongoose.Types.ObjectId();
+    const username = await buildUniqueUsername({
+      displayName,
+      userId: newUserId,
+    });
+
+    const userPayload = {
+      _id: newUserId,
       email: emailNorm,
       passwordHash,
       isInternalTest: isInternalTestEmail(emailNorm),
       displayName: String(displayName || "").trim(),
+      username,
       dateOfBirth: dobParsed.date,
 
       adultConsentAt: req.body?.adultConsent === true ? new Date() : null,
@@ -447,7 +480,20 @@ router.post('/register', async (req, res) => {
 
       accountType: "base",
       isCreator: false,
-    });
+    };
+
+    let newUser;
+    try {
+      newUser = await User.create(userPayload);
+    } catch (err) {
+      if (!isDuplicateUsernameKeyError(err)) throw err;
+
+      userPayload.username = await buildUniqueUsername({
+        displayName,
+        userId: newUserId,
+      });
+      newUser = await User.create(userPayload);
+    }
 
     await AgeGateLog.updateOne(
       { email: emailNorm, userId: null },
@@ -494,6 +540,7 @@ router.post('/register', async (req, res) => {
         id: newUser._id,
         email: newUser.email,
         displayName: newUser.displayName,
+        username: newUser.username,
         accountType: newUser.accountType,
         isInternalTest: newUser.isInternalTest === true,
         emailVerifiedAt: null,
@@ -612,6 +659,7 @@ router.post('/login', loginRateLimit, async (req, res) => {
         id: user.id,
         email: user.email,
         displayName: user.displayName,
+        username: user.username,
         profileType: user.profileType,
         accountType: user.accountType,
         isInternalTest: user.isInternalTest === true,
@@ -654,6 +702,7 @@ router.get("/me", authMiddleware, async (req, res) => {
       user: {
         id: user._id,
         displayName: user.displayName,
+        username: user.username,
         profileType: user.profileType,
         area: user.area,
         bio: user.bio,

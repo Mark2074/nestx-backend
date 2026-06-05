@@ -950,7 +950,7 @@ router.get("/me", auth, async (req, res) => {
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
-        .populate("authorId", "displayName avatar accountType role"),
+        .populate("authorId", "username displayName avatar accountType role"),
       Post.countDocuments(baseQuery),
     ]);
 
@@ -1144,7 +1144,7 @@ router.get("/feed/fedbase", auth, async (req, res) => {
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
-        .populate("authorId", "username avatar accountType"),
+        .populate("authorId", "username displayName avatar accountType"),
       Post.countDocuments(baseQuery),
     ]);
 
@@ -1215,7 +1215,7 @@ router.get('/feed/fedvip', auth, async (req, res) => {
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
-        .populate('authorId', 'username avatar accountType'),
+        .populate('authorId', 'username displayName avatar accountType'),
       Post.countDocuments(query),
     ]);
 
@@ -1351,7 +1351,7 @@ router.get("/feed/fed", auth, async (req, res) => {
         ...excludeAuthors,
         tags: { $in: usedInterests },
       })
-        .populate({ path: "authorId", select: "displayName avatar accountType role" })
+        .populate({ path: "authorId", select: "username displayName avatar accountType role" })
         .select("-area -language")
         .sort({ createdAt: -1 })
         .limit(pool)
@@ -1371,7 +1371,7 @@ router.get("/feed/fed", auth, async (req, res) => {
         text: { $regex: rx },
         _id: { $nin: primary.map((p) => p._id) },
       })
-        .populate({ path: "authorId", select: "displayName avatar accountType role" })
+        .populate({ path: "authorId", select: "username displayName avatar accountType role" })
         .select("-area -language")
         .sort({ createdAt: -1 })
         .limit(need)
@@ -1384,7 +1384,7 @@ router.get("/feed/fed", auth, async (req, res) => {
         ...visibilityQuery,
         ...excludeAuthors,
       })
-        .populate({ path: "authorId", select: "displayName avatar accountType role" })
+        .populate({ path: "authorId", select: "username displayName avatar accountType role" })
         .select("-area -language")
         .sort({ createdAt: -1 })
         .limit(pool)
@@ -1503,7 +1503,7 @@ router.get('/feed/following', auth, async (req, res) => {
             .sort({ createdAt: -1 })
             .skip(skip)
             .limit(limit)
-            .populate("authorId", "username avatar accountType"),
+            .populate("authorId", "username displayName avatar accountType"),
           Post.countDocuments(baseQuery),
         ]);
 

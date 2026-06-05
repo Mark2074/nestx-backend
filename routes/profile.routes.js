@@ -15,6 +15,7 @@ const {
 const { maybeRenewVip } = require("../services/vipService");
 const { shouldHideInternalTestUser } = require("../utils/internalTestAccounts");
 const { shouldHidePublicSocialUser } = require("../utils/publicSocialUser");
+const { normalizeUsername, validateUsername } = require("../utils/username");
 
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
 const ALLOWED_MIMES = new Set(["image/jpeg", "image/png", "image/webp"]);
@@ -374,7 +375,7 @@ router.put("/update", auth, async (req, res) => {
  * @desc    Profilo pubblico utente + contatori follow
  * @access  Private (per ora; poi decidiamo se renderlo pubblico)
  */
-router.get("/public/:id", auth, async (req, res) => {
+async function publicProfileHandler(req, res) {
   try {
     const targetUserId = req.params.id;
 
@@ -388,7 +389,7 @@ router.get("/public/:id", auth, async (req, res) => {
     // Dati base utente (profilo pubblico)
     const user = await User.findById(targetUserId)
       .select(
-        "_id email emailVerifiedAt displayName profileType area bio avatar coverImage interests language isVip verifiedUser isCreator creatorEnabled payoutProvider payoutEnabled payoutStatus createdAt verificationStatus verificationPublicVideoUrl isPrivate accountType status accountStatus isBanned isSuspended isDeleted deletedAt deletionStatus isInternalTest"
+        "_id email emailVerifiedAt displayName username profileType area bio avatar coverImage interests language isVip verifiedUser isCreator creatorEnabled payoutProvider payoutEnabled payoutStatus createdAt verificationStatus verificationPublicVideoUrl isPrivate accountType status accountStatus isBanned isSuspended isDeleted deletedAt deletionStatus isInternalTest"
       )
       .lean()
       .exec();
@@ -553,13 +554,52 @@ router.get("/public/:id", auth, async (req, res) => {
       message: "Internal error during user profile recovery",
     });
   }
+}
+
+router.get("/username/:username", auth, async (req, res) => {
+  try {
+    const normalized = normalizeUsername(req.params.username);
+    const validation = validateUsername(normalized);
+
+    if (!validation.ok) {
+      return res.status(400).json({
+        status: "error",
+        code: validation.code,
+        message: validation.message,
+      });
+    }
+
+    const user = await User.findOne({ username: validation.username })
+      .select("_id")
+      .lean()
+      .exec();
+
+    if (!user) {
+      return res.status(404).json({
+        status: "error",
+        code: "USER_NOT_FOUND",
+        message: "User not found",
+      });
+    }
+
+    req.params.id = String(user._id);
+    return publicProfileHandler(req, res);
+  } catch (err) {
+    console.error("Errore GET /api/profile/username/:username:", err);
+    return res.status(500).json({
+      status: "error",
+      message: "Internal error during username lookup",
+    });
+  }
 });
+
+router.get("/public/:id", auth, publicProfileHandler);
 
 // GET /api/profile/status/me - stato account (base/vip/creator + token)
 router.get("/status/me", auth, async (req, res) => {
   try {
     const user = await User.findById(req.user._id).select(
-      "_id accountType isVip isCreator creatorEnabled payoutProvider payoutEnabled payoutStatus verifiedUser verificationStatus verificationPublicVideoUrl tokenBalance tokenEarnings displayName avatar coverImage hasSeenTokenInfo"
+      "_id accountType isVip isCreator creatorEnabled payoutProvider payoutEnabled payoutStatus verifiedUser verificationStatus verificationPublicVideoUrl tokenBalance tokenEarnings displayName username avatar coverImage hasSeenTokenInfo"
     );
 
     if (!user) {
@@ -596,6 +636,7 @@ router.get("/status/me", auth, async (req, res) => {
         hasSeenTokenInfo: user.hasSeenTokenInfo === true,
         profile: {
           displayName: user.displayName,
+          username: user.username,
           avatar: user.avatar,
           coverImage: user.coverImage,
         },

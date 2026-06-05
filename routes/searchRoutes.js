@@ -352,7 +352,7 @@ router.get("/search", auth, async (req, res) => {
       }
 
       users = await User.find(userQuery)
-        .select("displayName avatar bio profileType isPrivate")
+        .select("displayName username avatar bio profileType isPrivate")
         .skip(skip)
         .limit(limit)
         .lean();
@@ -410,7 +410,7 @@ router.get("/search", auth, async (req, res) => {
 
       posts = await Post.find(postQuery)
         .select("-area -language") // non esportare
-        .populate("authorId", "displayName avatar isPrivate") // no role/accountType
+        .populate("authorId", "username displayName avatar isPrivate") // no role/accountType
         .skip(skip)
         .limit(limit)
         .lean();

@@ -108,13 +108,14 @@ router.get("/me", auth, async (req, res) => {
     const blockerId = req.user._id;
 
     const blocks = await Block.find({ blockerId })
-      .populate("blockedId", "displayName email profileType")
+      .populate("blockedId", "username displayName email profileType")
       .lean();
 
     return res.status(200).json({
       status: "success",
       data: blocks.map((b) => ({
         id: b.blockedId._id,
+        username: b.blockedId.username,
         displayName: b.blockedId.displayName,
         email: b.blockedId.email,
         profileType: b.blockedId.profileType,
