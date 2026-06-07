@@ -20,6 +20,7 @@ const NotificationSchema = new mongoose.Schema(
         "SOCIAL_NEW_FOLLOWER",
         "SOCIAL_POST_LIKED",
         "SOCIAL_POST_COMMENTED",
+        "SOCIAL_MENTION",
 
         // EVENTI
         "EVENT_WENT_LIVE",

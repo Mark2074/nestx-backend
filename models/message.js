@@ -33,6 +33,12 @@ const messageSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    hiddenFor: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+    ],
     // Soft delete (UI): VIP può eliminare "per entrambi"
     deletedForEveryoneAt: {
       type: Date,

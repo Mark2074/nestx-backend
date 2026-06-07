@@ -232,6 +232,12 @@ router.post("/:recipientId", auth, async (req, res) => {
         });
       }
     }
+
+    await Message.updateMany(
+      { conversationKey },
+      { $pull: { hiddenFor: { $in: [sender._id, dbRecipient._id] } } }
+    ).exec();
+
     const newMessage = new Message({
       senderId: sender._id,
       recipientId: dbRecipient._id,
@@ -290,6 +296,7 @@ router.get("/conversations", auth, async (req, res) => {
     const messages = await Message.find({
       $or: [{ senderId: userId }, { recipientId: userId }],
       deletedForEveryoneAt: null,
+      hiddenFor: { $ne: userId },
     })
       .sort({ createdAt: -1 })
       .limit(200) // limite di sicurezza
@@ -402,6 +409,70 @@ router.get("/conversation/:otherUserId", auth, async (req, res) => {
     return res.status(500).json({
       status: "error",
       message: "Internal error while retrieving the conversation",
+    });
+  }
+});
+
+/**
+ * @route   DELETE /api/messages/conversations/:otherUserId
+ * @desc    Nasconde una conversazione solo per l'utente corrente.
+ * @access  Private
+ */
+router.delete("/conversations/:otherUserId", auth, async (req, res) => {
+  try {
+    const user = req.user;
+    const otherUserId = req.params.otherUserId;
+
+    if (!user) {
+      return res.status(401).json({
+        status: "error",
+        message: "User not authenticated",
+      });
+    }
+
+    if (!otherUserId) {
+      return res.status(400).json({
+        status: "error",
+        message: "Recipient ID missing",
+      });
+    }
+
+    const otherUser = await User.findById(otherUserId)
+      .select("_id email isInternalTest")
+      .lean();
+    if (!otherUser || shouldHideInternalTestUser(otherUser, user)) {
+      return res.status(404).json({
+        status: "error",
+        message: "Recipient not found",
+      });
+    }
+
+    const conversationKey = Message.buildConversationKey(user._id, otherUserId);
+    const result = await Message.updateMany(
+      {
+        conversationKey,
+        $or: [{ senderId: user._id }, { recipientId: user._id }],
+      },
+      { $addToSet: { hiddenFor: user._id } }
+    ).exec();
+
+    if (!result.matchedCount) {
+      return res.status(404).json({
+        status: "error",
+        message: "Conversation not found",
+      });
+    }
+
+    return res.status(200).json({
+      status: "success",
+      message: "Conversation hidden",
+      data: { conversationKey },
+    });
+  } catch (err) {
+    console.error("Errore hide conversazione:", err);
+    return res.status(500).json({
+      status: "error",
+      message: "Internal error while hiding the conversation",
     });
   }
 });
