@@ -4174,13 +4174,15 @@ router.post("/:id/join", auth, featureGuard("live"), async (req, res) => {
 
     // carico dati aggiornati user dal DB per evitare valori stale su req.user
     const dbUser = await User.findById(user._id)
-      .select("isVip tokenBalance accountType")
+      .select("isVip tokenBalance tokenHeld accountType")
       .lean()
       .exec();
 
     const isAdmin = String(dbUser?.accountType || getAccountTypeFromUser(user) || "").toLowerCase() === "admin";
     const isVip = dbUser?.isVip === true;
     const tokenBalance = Number(dbUser?.tokenBalance || 0);
+    const tokenHeld = Number(dbUser?.tokenHeld || 0);
+    const spendableTokens = Math.max(0, tokenBalance - tokenHeld);
 
     const isPaidEvent = Number(event.ticketPriceTokens || 0) > 0 || effectiveScope === "private";
 
@@ -4202,7 +4204,7 @@ router.post("/:id/join", auth, featureGuard("live"), async (req, res) => {
     } else if (isPaidEvent) {
       canChat = true;
       canChatReason = "ALLOWED";
-    } else if (isVip || tokenBalance > 0) {
+    } else if (isVip || spendableTokens > 0) {
       canChat = true;
       canChatReason = "ALLOWED";
     } else {

@@ -833,6 +833,10 @@ router.get("/transactions", auth, async (req, res) => {
     const userId = req.user._id;
 
     const uid = String(userId);
+    const requestedLimit = Number.parseInt(String(req.query?.limit || ""), 10);
+    const limit = Number.isFinite(requestedLimit)
+      ? Math.min(100, Math.max(1, requestedLimit))
+      : 50;
 
     const txs = await TokenTransaction.find({
       $or: [
@@ -841,7 +845,7 @@ router.get("/transactions", auth, async (req, res) => {
       ],
     })
       .sort({ createdAt: -1 })
-      .limit(50)
+      .limit(limit)
       .lean();
 
     return res.json({

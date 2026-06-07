@@ -93,7 +93,7 @@ router.get("/me/available", auth, async (req, res) => {
     const userId = req.user._id;
 
     const user = await User.findById(userId).select(
-  "accountType isCreator tokenEarnings tokenRedeemable creatorEnabled creatorVerification payoutProvider payoutEnabled payoutStatus");
+  "accountType isCreator tokenEarnings tokenRedeemable tokenHeld creatorEnabled creatorVerification payoutProvider payoutEnabled payoutStatus");
 
     // Fase 1A: economy disabled -> values forced to 0 (read-only)
     if (!isEconomyEnabled()) {
