@@ -13,6 +13,7 @@ const {
 const { shouldHidePublicSocialUser } = require("../utils/publicSocialUser");
 
 const router = express.Router();
+const ACTOR_POPULATE_FIELDS = "username displayName avatar email emailVerifiedAt accountType isInternalTest isBanned isSuspended isDeleted deletedAt";
 
 function getActorId(notification) {
   const actor = notification?.actorId;
@@ -90,6 +91,14 @@ async function getEnvironmentExcludedActorIds(viewerUser) {
   return users.map((u) => u._id);
 }
 
+function isNotificationVisibleForViewer(item, viewerUser) {
+  if (!item?.actorId || typeof item.actorId !== "object") return true;
+  return (
+    !shouldHideInternalTestUser(item.actorId, viewerUser) &&
+    !shouldHidePublicSocialUser(item.actorId, viewerUser)
+  );
+}
+
 /**
  * GET /api/notifications
  * query: ?limit=20&cursor=<ISO date>&unreadOnly=1
@@ -119,17 +128,11 @@ router.get("/", auth, async (req, res) => {
 
     const rawItems = await Notification.find(q)
       .sort({ createdAt: -1 })
-      .populate("actorId", "username displayName avatar email emailVerifiedAt accountType isInternalTest isBanned isSuspended isDeleted deletedAt")
+      .populate("actorId", ACTOR_POPULATE_FIELDS)
       .limit(limit)
       .lean();
 
-    const environmentItems = rawItems.filter((item) => {
-      if (!item?.actorId || typeof item.actorId !== "object") return true;
-      return (
-        !shouldHideInternalTestUser(item.actorId, req.user) &&
-        !shouldHidePublicSocialUser(item.actorId, req.user)
-      );
-    });
+    const environmentItems = rawItems.filter((item) => isNotificationVisibleForViewer(item, req.user));
 
     const items = await reconcileFollowRequestNotifications(environmentItems, me);
 
@@ -160,13 +163,12 @@ router.get("/unread-count", auth, async (req, res) => {
       ];
     }
 
-    const unreadFollowRequests = await Notification.find({
-      ...q,
-      type: "SOCIAL_FOLLOW_REQUEST",
-    }).lean();
-
-    await reconcileFollowRequestNotifications(unreadFollowRequests, me);
-    const count = await Notification.countDocuments(q);
+    const rawUnreadItems = await Notification.find(q)
+      .populate("actorId", ACTOR_POPULATE_FIELDS)
+      .lean();
+    const environmentItems = rawUnreadItems.filter((item) => isNotificationVisibleForViewer(item, req.user));
+    const items = await reconcileFollowRequestNotifications(environmentItems, me);
+    const count = items.filter((item) => item?.isRead !== true).length;
     return res.json({ status: "success", count });
   } catch (err) {
     console.error("GET /api/notifications/unread-count error:", err);
@@ -192,7 +194,7 @@ router.patch("/:id/read", auth, async (req, res) => {
       { $set: { isRead: true, readAt: new Date() } },
       { new: true }
     )
-      .populate("actorId", "username displayName avatar email emailVerifiedAt accountType isInternalTest isBanned isSuspended isDeleted deletedAt")
+      .populate("actorId", ACTOR_POPULATE_FIELDS)
       .lean()
       .exec();
 
