@@ -3902,6 +3902,7 @@ router.post("/:id/ticket", auth, featureGuard("live"), async (req, res) => {
               data: {
                 buyerId: user._id,
                 eventId: event._id,
+                eventTitle: event.title || null,
                 ticketId: savedTicket._id,
                 scope,
                 roomId: roomId || null,
