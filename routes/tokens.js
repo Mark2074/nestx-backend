@@ -12,6 +12,7 @@ const TokenAuditLog = require("../models/TokenAuditLog");
 const crypto = require("crypto");
 const { debitUserTokensBuckets } = require("../services/tokenDebitService");
 const Event = require("../models/event");
+const LiveMessage = require("../models/LiveMessage");
 
 const router = express.Router();
 
@@ -695,6 +696,20 @@ router.post("/transfer", auth, featureGuard("tokens"), async (req, res) => {
           }
 
           await ev.save();
+
+          const displayName = String(fromUser?.displayName || "User").trim() || "User";
+          await LiveMessage.create({
+            eventId: ev._id,
+            scope: "public",
+            privateSessionCounter: null,
+            userId: fromUserId,
+            displayName,
+            text: `🎁 ${displayName} tipped ${amt} tokens`,
+            moderation: {
+              status: "visible",
+            },
+            createdAt: now,
+          });
 
         } catch (e) {
           console.error("TIP_EVENT_UPDATE_FAILED", e?.message || e);
