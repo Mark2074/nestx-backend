@@ -264,6 +264,7 @@ router.get("/search", auth, async (req, res) => {
     const country = req.query.country
       ? String(req.query.country).trim()
       : (req.query.area ? String(req.query.area).trim() : null);
+    const countryRx = country ? new RegExp(`^${escapeRegex(country)}$`, "i") : null;
 
     const language = req.query.language ? String(req.query.language).trim() : null;
 
@@ -337,13 +338,13 @@ router.get("/search", auth, async (req, res) => {
       if (canUseVipFilters) {
         if (profileType) userQuery.profileType = profileType;
 
-        if (country) {
+        if (countryRx) {
           userQuery.$and = userQuery.$and || [];
           userQuery.$and.push({
             $or: [
-              { "location.country": country },
-              { country: country },
-              { area: country }, // legacy
+              { "location.country": countryRx },
+              { country: countryRx },
+              { area: countryRx }, // legacy
             ],
           });
         }
@@ -394,9 +395,9 @@ router.get("/search", auth, async (req, res) => {
         if (profileType) authorQ.profileType = profileType;
         if (language) authorQ.language = language;
 
-        if (country) {
+        if (countryRx) {
           authorQ.$and = authorQ.$and || [];
-          authorQ.$and.push({ $or: [{ "location.country": country }, { area: country }] });
+          authorQ.$and.push({ $or: [{ "location.country": countryRx }, { area: countryRx }] });
         }
 
         const authorDocs = await User.find(authorQ).select("_id").lean();
@@ -445,13 +446,13 @@ router.get("/search", auth, async (req, res) => {
       // EVENTS: profileType + country disponibili Base+VIP
       if (profileType) eventQuery.targetProfileType = profileType;
 
-      if (country) {
+      if (countryRx) {
         eventQuery.$and = eventQuery.$and || [];
         eventQuery.$and.push({
           $or: [
-            { "location.country": country },
-            { country: country },
-            { area: country }, // legacy
+            { "location.country": countryRx },
+            { country: countryRx },
+            { area: countryRx }, // legacy
           ],
         });
       }
