@@ -11,6 +11,10 @@ const Follow = require("../models/Follow");
 const { getBlockedUserIds } = require("../utils/blockUtils");
 const getMutedUserIds = require("../utils/getMutedUserIds");
 const { getOppositeEnvironmentUserQuery } = require("../utils/internalTestAccounts");
+const {
+  getDiscoveryAvailabilityProjection,
+  getDiscoveryAvailabilityStages,
+} = require("../utils/eventDiscoveryAvailability");
 
 /**
  * Helpers
@@ -284,6 +288,7 @@ router.get("/search", auth, async (req, res) => {
     // -------------------------
     const pipeline = [
       { $match: query },
+      ...getDiscoveryAvailabilityStages(),
       {
         $addFields: {
           _sortBucket: { $cond: [{ $eq: ["$status", "live"] }, 0, 1] },
@@ -306,14 +311,20 @@ router.get("/search", auth, async (req, res) => {
           _sortBucket: 0,
           _sortLiveTs: 0,
           _sortSchedTs: 0,
+          ...getDiscoveryAvailabilityProjection(),
         },
       },
     ];
 
-    const [items, total] = await Promise.all([
+    const [items, totalRows] = await Promise.all([
       Event.aggregate(pipeline),
-      Event.countDocuments(query),
+      Event.aggregate([
+        { $match: query },
+        ...getDiscoveryAvailabilityStages(),
+        { $count: "total" },
+      ]),
     ]);
+    const total = Number(totalRows?.[0]?.total || 0);
 
     // attach creator minimal (populate manuale)
     const creatorIds = Array.from(new Set(items.map((e) => String(e.creatorId)).filter(Boolean)));

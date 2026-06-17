@@ -29,6 +29,10 @@ const {
   isAdminViewer,
   shouldHideInternalTestUser,
 } = require("../utils/internalTestAccounts");
+const {
+  getDiscoveryAvailabilityProjection,
+  getDiscoveryAvailabilityStages,
+} = require("../utils/eventDiscoveryAvailability");
 
 router.get('/ping-events', (req, res) => {
   res.json({ status: 'ok', source: 'eventRoutes' });
@@ -2782,16 +2786,26 @@ router.get("/feed", auth, featureGuard("live"), async (req, res) => {
     let sort = { startTime: 1 };
     if (filter === "live" || filter === "past") sort = { startTime: -1 };
 
-    const events = await Event.find(query)
-      .select("-language -area -targetProfileType")
-      .sort(sort)
-      .skip(skip)
-      .limit(limit)
-      .populate({
-        path: "creatorId",
-        select: "displayName avatar accountType role isInternalTest",
-      })
-      .exec();
+    const events = await Event.aggregate([
+      { $match: query },
+      ...getDiscoveryAvailabilityStages(),
+      { $sort: sort },
+      { $skip: skip },
+      { $limit: limit },
+      {
+        $project: {
+          language: 0,
+          area: 0,
+          targetProfileType: 0,
+          ...getDiscoveryAvailabilityProjection(),
+        },
+      },
+    ]);
+
+    await Event.populate(events, {
+      path: "creatorId",
+      select: "displayName avatar accountType role isInternalTest",
+    });
 
     const result = events.map((event) => ({
       id: event._id,

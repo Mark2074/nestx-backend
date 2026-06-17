@@ -1645,7 +1645,7 @@ router.get("/:eventId/status", auth, featureGuard("live"), async (req, res) => {
     }
 
     const event = await Event.findById(eventId)
-      .select("_id status live creatorId privateSession privateSessionCounter accessScope ticketPriceTokens")
+      .select("_id status live creatorId privateSession privateSessionCounter accessScope ticketPriceTokens goal")
       .lean()
       .exec();
 
@@ -1720,6 +1720,7 @@ router.get("/:eventId/status", auth, featureGuard("live"), async (req, res) => {
     };
 
     const ps = event.privateSession || null;
+    const goal = event.goal || {};
     
     return res.status(200).json({
       status: "success",
@@ -1742,6 +1743,16 @@ router.get("/:eventId/status", auth, featureGuard("live"), async (req, res) => {
         hostDisconnectState: hostLifecycle.hostDisconnectState,
         hostGraceActive: hostLifecycle.hostGraceActive,
         hostGraceExpiresAt: hostLifecycle.hostGraceExpiresAt,
+        goal: {
+          isActive: goal.isActive === true,
+          targetTokens: Number(goal.targetTokens || 0),
+          progressTokens: Number(goal.progressTokens || 0),
+          title: String(goal.title || ""),
+          description: String(goal.description || ""),
+          reachedAt: goal.reachedAt || null,
+          createdAt: goal.createdAt || null,
+          updatedAt: goal.updatedAt || null,
+        },
 
         live: event.live
           ? {

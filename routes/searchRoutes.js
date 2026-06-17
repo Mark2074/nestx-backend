@@ -16,6 +16,10 @@ const crypto = require("crypto");
 const SensitiveDictionaryEntry = require("../models/SensitiveDictionaryEntry");
 const ProhibitedSearchLog = require("../models/ProhibitedSearchLog");
 const AccountTrustRecord = require("../models/AccountTrustRecord");
+const {
+  getDiscoveryAvailabilityProjection,
+  getDiscoveryAvailabilityStages,
+} = require("../utils/eventDiscoveryAvailability");
 
 // ----------------------------------------
 // Helpers
@@ -462,11 +466,20 @@ router.get("/search", auth, async (req, res) => {
         eventQuery.language = language;
       }
 
-      events = await Event.find(eventQuery)
-        .select("-area -language -targetProfileType") // non esportare
-        .skip(skip)
-        .limit(limit)
-        .lean();
+      events = await Event.aggregate([
+        { $match: eventQuery },
+        ...getDiscoveryAvailabilityStages(),
+        { $skip: skip },
+        { $limit: limit },
+        {
+          $project: {
+            area: 0,
+            language: 0,
+            targetProfileType: 0,
+            ...getDiscoveryAvailabilityProjection(),
+          },
+        },
+      ]);
     }
 
     return res.json({
