@@ -168,6 +168,7 @@ const isEmailAllowlisted =
   // legacy (still allow if present)
   (method === "POST" && path.startsWith("/api/profile/avatar")) ||
   (method === "POST" && path.startsWith("/api/profile/cover")) ||
+  (method === "DELETE" && path.startsWith("/api/profile/cover")) ||
 
   // profile page safe reads (avoid console spam)
   (method === "GET" && path.startsWith("/api/posts/me")) ||

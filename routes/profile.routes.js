@@ -731,6 +731,33 @@ router.post("/cover", auth, (req, res) => {
   });
 });
 
+// DELETE /api/profile/cover
+router.delete("/cover", auth, async (req, res) => {
+  try {
+    const meId = String(req.user._id);
+    const existing = await User.findByIdAndUpdate(
+      meId,
+      { $set: { coverImage: null } },
+      { new: false }
+    )
+      .select("coverImage")
+      .lean();
+
+    if (!existing) {
+      return res.status(404).json({ status: "error", message: "User not found" });
+    }
+
+    if (existing.coverImage) {
+      deleteFromR2ByUrl(existing.coverImage).catch(() => {});
+    }
+
+    return res.json({ status: "ok", coverImage: null });
+  } catch (e) {
+    console.error("Errore DELETE /api/profile/cover:", e);
+    return res.status(500).json({ status: "error", message: "Internal server error" });
+  }
+});
+
 router.post("/token-info-accept", auth, async (req, res) => {
   try {
     const TOKEN_INFO_VERSION = 1;
