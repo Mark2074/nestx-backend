@@ -2,6 +2,14 @@ function normalizeEmail(value) {
   return String(value || "").trim().toLowerCase();
 }
 
+const CAN_CROSS_AUDIENCE_EMAILS = new Set([
+  "nestx_test.mantis686@simplelogin.com",
+]);
+
+function isBridgeUser(user) {
+  return CAN_CROSS_AUDIENCE_EMAILS.has(normalizeEmail(user?.email));
+}
+
 function escapeRegex(value) {
   return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -61,6 +69,7 @@ function isAdminViewer(user) {
 
 function getOppositeEnvironmentUserQuery(viewerUser) {
   if (isAdminViewer(viewerUser)) return null;
+  if (isBridgeUser(viewerUser)) return null;
 
   const internalTestConditions = getInternalTestUserConditions();
   if (isInternalTestUser(viewerUser)) {
@@ -72,6 +81,7 @@ function getOppositeEnvironmentUserQuery(viewerUser) {
 
 function getSameEnvironmentUserQuery(viewerUser) {
   if (isAdminViewer(viewerUser)) return null;
+  if (isBridgeUser(viewerUser)) return null;
 
   const internalTestConditions = getInternalTestUserConditions();
   if (isInternalTestUser(viewerUser)) {
@@ -83,13 +93,16 @@ function getSameEnvironmentUserQuery(viewerUser) {
 
 function shouldHideInternalTestUser(targetUser, viewerUser, ownerId = null) {
   if (isAdminViewer(viewerUser)) return false;
+  if (isBridgeUser(viewerUser)) return false;
   if (ownerId && String(ownerId) === String(targetUser?._id || targetUser)) return false;
 
   return isInternalTestUser(targetUser) !== isInternalTestUser(viewerUser);
 }
 
 module.exports = {
+  CAN_CROSS_AUDIENCE_EMAILS,
   normalizeGmailAliasEmail,
+  isBridgeUser,
   isInternalTestEmail,
   isInternalTestUser,
   getInternalTestUserConditions,
