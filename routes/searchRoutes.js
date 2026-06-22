@@ -263,7 +263,9 @@ router.get("/search", auth, async (req, res) => {
     const skip = (page - 1) * limit;
 
     // NOTE: memo = country (nome Stato) — supporto fallback area per compatibilità (se frontend vecchio manda area)
-    const profileType = req.query.profileType ? String(req.query.profileType).trim() : null;
+    const profileType = req.query.profileType
+      ? String(req.query.profileType).trim().toLowerCase()
+      : null;
 
     // country = NAZIONE (nome completo). DB legacy usa "area".
     const country = req.query.country
@@ -271,7 +273,9 @@ router.get("/search", auth, async (req, res) => {
       : (req.query.area ? String(req.query.area).trim() : null);
     const countryRx = country ? new RegExp(`^${escapeRegex(country)}$`, "i") : null;
 
-    const language = req.query.language ? String(req.query.language).trim() : null;
+    const language = req.query.language
+      ? String(req.query.language).trim().toLowerCase()
+      : null;
 
     const rx = q ? new RegExp(escapeRegex(q), "i") : null;
 

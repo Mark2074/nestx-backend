@@ -3,18 +3,12 @@ const { buildUserLanguageFilter } = require("./searchLanguageFilter");
 
 function matchesField(value, matcher) {
   if (matcher instanceof RegExp) {
-    return typeof value === "string" && matcher.test(value);
-  }
-
-  if (matcher && matcher.$elemMatch instanceof RegExp) {
-    return (
-      Array.isArray(value) &&
-      value.some(
-        (item) =>
-          typeof item === "string" &&
-          matcher.$elemMatch.test(item)
-      )
-    );
+    if (typeof value === "string") return matcher.test(value);
+    if (Array.isArray(value)) {
+      return value.some(
+        (item) => typeof item === "string" && matcher.test(item)
+      );
+    }
   }
 
   return false;
@@ -52,6 +46,26 @@ const aliasProfile = {
 };
 assert.equal(matchesLanguage(aliasProfile, "pt"), true);
 
+const legacyStringProfile = {
+  language: "fr",
+  additionalLanguages: "en, it",
+};
+assert.equal(matchesLanguage(legacyStringProfile, "en"), true);
+assert.equal(matchesLanguage(legacyStringProfile, "it"), true);
+assert.equal(matchesLanguage(legacyStringProfile, "es"), false);
+
+const femaleMultilingualProfile = {
+  profileType: "female",
+  language: "fr",
+  languages: ["en", "it"],
+};
+assert.equal(
+  femaleMultilingualProfile.profileType === "female" &&
+    matchesLanguage(femaleMultilingualProfile, "it"),
+  true
+);
+
 assert.equal(buildUserLanguageFilter("   "), null);
+assert.equal(matchesLanguage(multilingualProfile, ""), true);
 
 console.log("searchLanguageFilter checks passed");
