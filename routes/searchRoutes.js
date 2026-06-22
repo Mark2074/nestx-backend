@@ -20,6 +20,7 @@ const {
   getDiscoveryAvailabilityProjection,
   getDiscoveryAvailabilityStages,
 } = require("../utils/eventDiscoveryAvailability");
+const { buildUserLanguageFilter } = require("../utils/searchLanguageFilter");
 
 // ----------------------------------------
 // Helpers
@@ -353,7 +354,13 @@ router.get("/search", auth, async (req, res) => {
           });
         }
 
-        if (language) userQuery.language = language;
+        if (language) {
+          const languageFilter = buildUserLanguageFilter(language);
+          if (languageFilter) {
+            userQuery.$and = userQuery.$and || [];
+            userQuery.$and.push(languageFilter);
+          }
+        }
       }
 
       users = await User.find(userQuery)
