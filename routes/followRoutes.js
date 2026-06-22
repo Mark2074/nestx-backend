@@ -493,7 +493,7 @@ router.get("/relationship/:id", auth, async (req, res) => {
     }
 
     const target = await User.findById(targetUserId)
-      .select("_id emailVerifiedAt accountType isBanned isSuspended isDeleted deletedAt isInternalTest")
+      .select("_id email emailVerifiedAt accountType isBanned isSuspended isDeleted deletedAt isInternalTest")
       .lean();
 
     if (!target || shouldHideInternalTestUser(target, req.user) || shouldHidePublicSocialUser(target, req.user)) {
