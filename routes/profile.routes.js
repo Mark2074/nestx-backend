@@ -389,7 +389,7 @@ async function publicProfileHandler(req, res) {
     // Dati base utente (profilo pubblico)
     const user = await User.findById(targetUserId)
       .select(
-        "_id email emailVerifiedAt displayName username profileType area bio avatar coverImage interests language isVip verifiedUser isCreator creatorEnabled payoutProvider payoutEnabled payoutStatus createdAt verificationStatus verificationPublicVideoUrl isPrivate accountType status accountStatus isBanned isSuspended isDeleted deletedAt deletionStatus isInternalTest"
+        "_id email emailVerifiedAt displayName username profileType area bio avatar coverImage interests language languages isVip verifiedUser isCreator creatorEnabled payoutProvider payoutEnabled payoutStatus createdAt verificationStatus verificationPublicVideoUrl isPrivate accountType status accountStatus isBanned isSuspended isDeleted deletedAt deletionStatus isInternalTest"
       )
       .lean()
       .exec();
@@ -530,6 +530,9 @@ async function publicProfileHandler(req, res) {
       message: "User profile recovered successfully",
       data: {
         ...user,
+        additionalLanguages: Array.isArray(user?.languages)
+          ? user.languages
+          : [],
 
           // ✅ normalized flags
           isVerified,
