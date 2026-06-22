@@ -5,6 +5,7 @@ process.env.INTERNAL_TEST_EMAIL_BASE = "realemail@gmail.com";
 const {
   normalizeGmailAliasEmail,
   isBridgeUser,
+  getBridgeUserConditions,
   isInternalTestEmail,
   getInternalTestUserConditions,
   getOppositeEnvironmentUserQuery,
@@ -32,13 +33,24 @@ const bridgeViewer = {
   accountType: "base",
   isInternalTest: true,
 };
+const bridgeTarget = {
+  _id: "bridge-target",
+  email: "nestx_test.mantis686@simplelogin.com",
+  accountType: "base",
+};
 
 assert.strictEqual(getInternalTestUserConditions().length, 2);
 assert.deepStrictEqual(getOppositeEnvironmentUserQuery(testViewer), {
-  $nor: getInternalTestUserConditions(),
+  $and: [
+    { $nor: getInternalTestUserConditions() },
+    { $nor: getBridgeUserConditions() },
+  ],
 });
 assert.deepStrictEqual(getSameEnvironmentUserQuery(testViewer), {
-  $or: getInternalTestUserConditions(),
+  $or: [
+    ...getInternalTestUserConditions(),
+    ...getBridgeUserConditions(),
+  ],
 });
 assert.strictEqual(shouldHideInternalTestUser(internalUser, normalViewer), true);
 assert.strictEqual(shouldHideInternalTestUser(internalAliasUser, normalViewer), true);
@@ -51,6 +63,8 @@ assert.strictEqual(getOppositeEnvironmentUserQuery(bridgeViewer), null);
 assert.strictEqual(getSameEnvironmentUserQuery(bridgeViewer), null);
 assert.strictEqual(shouldHideInternalTestUser(internalUser, bridgeViewer), false);
 assert.strictEqual(shouldHideInternalTestUser(realUser, bridgeViewer), false);
+assert.strictEqual(shouldHideInternalTestUser(bridgeTarget, testViewer), false);
+assert.strictEqual(shouldHideInternalTestUser(bridgeTarget, normalViewer), false);
 assert.strictEqual(
   String(bridgeViewer.accountType).toLowerCase() === "admin",
   false

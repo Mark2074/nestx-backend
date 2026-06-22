@@ -10,6 +10,12 @@ function isBridgeUser(user) {
   return CAN_CROSS_AUDIENCE_EMAILS.has(normalizeEmail(user?.email));
 }
 
+function getBridgeUserConditions() {
+  return Array.from(CAN_CROSS_AUDIENCE_EMAILS).map((email) => ({
+    email: new RegExp(`^${escapeRegex(email)}$`, "i"),
+  }));
+}
+
 function escapeRegex(value) {
   return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -72,11 +78,22 @@ function getOppositeEnvironmentUserQuery(viewerUser) {
   if (isBridgeUser(viewerUser)) return null;
 
   const internalTestConditions = getInternalTestUserConditions();
+  const bridgeConditions = getBridgeUserConditions();
   if (isInternalTestUser(viewerUser)) {
-    return { $nor: internalTestConditions };
+    return {
+      $and: [
+        { $nor: internalTestConditions },
+        { $nor: bridgeConditions },
+      ],
+    };
   }
 
-  return { $or: internalTestConditions };
+  return {
+    $and: [
+      { $or: internalTestConditions },
+      { $nor: bridgeConditions },
+    ],
+  };
 }
 
 function getSameEnvironmentUserQuery(viewerUser) {
@@ -84,16 +101,28 @@ function getSameEnvironmentUserQuery(viewerUser) {
   if (isBridgeUser(viewerUser)) return null;
 
   const internalTestConditions = getInternalTestUserConditions();
+  const bridgeConditions = getBridgeUserConditions();
   if (isInternalTestUser(viewerUser)) {
-    return { $or: internalTestConditions };
+    return {
+      $or: [
+        ...internalTestConditions,
+        ...bridgeConditions,
+      ],
+    };
   }
 
-  return { $nor: internalTestConditions };
+  return {
+    $or: [
+      { $nor: internalTestConditions },
+      ...bridgeConditions,
+    ],
+  };
 }
 
 function shouldHideInternalTestUser(targetUser, viewerUser, ownerId = null) {
   if (isAdminViewer(viewerUser)) return false;
   if (isBridgeUser(viewerUser)) return false;
+  if (isBridgeUser(targetUser)) return false;
   if (ownerId && String(ownerId) === String(targetUser?._id || targetUser)) return false;
 
   return isInternalTestUser(targetUser) !== isInternalTestUser(viewerUser);
@@ -103,6 +132,7 @@ module.exports = {
   CAN_CROSS_AUDIENCE_EMAILS,
   normalizeGmailAliasEmail,
   isBridgeUser,
+  getBridgeUserConditions,
   isInternalTestEmail,
   isInternalTestUser,
   getInternalTestUserConditions,
