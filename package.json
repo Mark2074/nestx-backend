@@ -10,7 +10,8 @@
     "check:admin-report-scope": "node utils/adminReportModerationScope.check.js",
     "check:public-post-visibility": "node utils/publicPostVisibility.check.js",
     "check:muted-event-visibility": "node utils/mutedEventVisibility.check.js",
-    "check:search-language": "node utils/searchLanguageFilter.check.js"
+    "check:search-language": "node utils/searchLanguageFilter.check.js",
+    "check:username": "node utils/username.check.js"
   },
   
   "keywords": [],

@@ -18,6 +18,16 @@ function normalizeUsername(value) {
   return String(value || "").trim().toLowerCase();
 }
 
+function normalizeEditableUsername(value) {
+  return normalizeUsername(value).replace(/^@+/, "");
+}
+
+function validateOptionalUsername(value) {
+  const username = normalizeEditableUsername(value);
+  if (!username) return { ok: true, username: null };
+  return validateUsername(username);
+}
+
 function isReservedUsername(value) {
   return RESERVED_USERNAMES.has(normalizeUsername(value));
 }
@@ -64,6 +74,8 @@ module.exports = {
   USERNAME_PATTERN,
   RESERVED_USERNAMES,
   normalizeUsername,
+  normalizeEditableUsername,
+  validateOptionalUsername,
   isReservedUsername,
   validateUsername,
   usernameBaseFromDisplayName,

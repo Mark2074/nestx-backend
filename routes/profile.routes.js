@@ -15,7 +15,11 @@ const {
 const { maybeRenewVip } = require("../services/vipService");
 const { shouldHideInternalTestUser } = require("../utils/internalTestAccounts");
 const { shouldHidePublicSocialUser } = require("../utils/publicSocialUser");
-const { normalizeUsername, validateUsername } = require("../utils/username");
+const {
+  normalizeUsername,
+  validateUsername,
+  validateOptionalUsername,
+} = require("../utils/username");
 
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
 const ALLOWED_MIMES = new Set(["image/jpeg", "image/png", "image/webp"]);
@@ -139,6 +143,7 @@ router.put("/update", auth, async (req, res) => {
     // campi che permettiamo di aggiornare
     const allowedFields = [
       "displayName",
+      "username",
       "profileType",
       "area",
       "bio",
@@ -180,7 +185,9 @@ router.put("/update", auth, async (req, res) => {
       Object.keys(updates).length === 1 && updates.hasSeenTokenInfo === true;
 
     // prima recuperiamo l'utente corrente, ci serve per capire se è vip/creator
-    const currentUser = await User.findById(meId).select("accountType isVip language appSettings");
+    const currentUser = await User.findById(meId).select(
+      "accountType isVip language appSettings username"
+    );
 
     if (!currentUser) {
       return res
@@ -197,6 +204,43 @@ router.put("/update", auth, async (req, res) => {
 
     // helper: valida formato "codice breve" (it, en, fr, es, de, pt, ecc.)
     const isValidLangCode = (code) => /^[a-z]{2,3}$/.test(code);
+
+    if ("username" in updates) {
+      const validation = validateOptionalUsername(updates.username);
+
+      if (!validation.ok) {
+        return res.status(400).json({
+          status: "error",
+          code: validation.code,
+          message: validation.message,
+        });
+      }
+
+      if (validation.username) {
+        const usernameRx = new RegExp(
+          `^${validation.username.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+          "i"
+        );
+        const existingUser = await User.findOne({
+          _id: { $ne: meId },
+          username: usernameRx,
+        })
+          .select("_id")
+          .lean();
+
+        if (existingUser) {
+          return res.status(409).json({
+            status: "error",
+            code: "USERNAME_TAKEN",
+            message: "This username is already taken.",
+          });
+        }
+
+        updates.username = validation.username;
+      } else {
+        delete updates.username;
+      }
+    }
 
     // 1) area obbligatoria (nessuna preselezione) — BUT NOT for token-info-only updates
     if (!isOnlyTokenInfo) {
@@ -336,7 +380,12 @@ router.put("/update", auth, async (req, res) => {
     }
 
     // ora applichiamo gli aggiornamenti
-    const user = await User.findByIdAndUpdate(meId, updates, {
+    const updateOperation = { $set: updates };
+    if ("username" in body && !validateOptionalUsername(body.username).username) {
+      updateOperation.$unset = { username: 1 };
+    }
+
+    const user = await User.findByIdAndUpdate(meId, updateOperation, {
       new: true,
       runValidators: true,
     }).select("-passwordHash");
@@ -360,6 +409,17 @@ router.put("/update", auth, async (req, res) => {
         status: "error",
         message: "Invalid data",
         details: err.message,
+      });
+    }
+
+    if (
+      err?.code === 11000 &&
+      (err?.keyPattern?.username || err?.keyValue?.username)
+    ) {
+      return res.status(409).json({
+        status: "error",
+        code: "USERNAME_TAKEN",
+        message: "This username is already taken.",
       });
     }
 
