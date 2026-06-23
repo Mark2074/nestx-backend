@@ -570,6 +570,59 @@ async function createPostMentionNotifications({ actorId, postId, text }) {
   }
 }
 
+async function createCommentMentionNotifications({
+  actorId,
+  postId,
+  commentId,
+  text,
+}) {
+  const usernames = extractMentionUsernames(text);
+  if (!usernames.length) return;
+
+  const actorIdString = String(actorId || "");
+  const commentIdString = String(commentId || "");
+  const postIdString = String(postId || "");
+  const mentionedUsers = await User.find({ username: { $in: usernames } })
+    .select("_id username")
+    .lean();
+
+  const ops = mentionedUsers
+    .filter((targetUser) => String(targetUser?._id || "") !== actorIdString)
+    .map((targetUser) => {
+      const targetUserId = String(targetUser._id);
+      const dedupeKey = `mention:comment:${commentIdString}:${targetUserId}`;
+
+      return {
+        updateOne: {
+          filter: { dedupeKey },
+          update: {
+            $setOnInsert: {
+              userId: targetUser._id,
+              actorId,
+              type: "SOCIAL_MENTION",
+              targetType: "post",
+              targetId: postId,
+              message: "You were mentioned in a comment",
+              data: {
+                postId: postIdString,
+                commentId: commentIdString,
+                username: targetUser.username,
+                preview: String(text || "").slice(0, 120),
+              },
+              isPersistent: false,
+              dedupeKey,
+            },
+          },
+          upsert: true,
+        },
+      };
+    });
+
+  if (ops.length) {
+    await Notification.bulkWrite(ops, { ordered: false });
+  }
+}
+
 /**
  * POST /posts
  * Creazione di un nuovo post
@@ -2274,6 +2327,22 @@ router.post("/:id/comment", auth, async (req, res) => {
       }
     } catch (e) {
       console.error("NOTIF_COMMENT_FAILED:", e?.message || e);
+    }
+
+    if (comment?.moderation?.status === "visible") {
+      try {
+        await createCommentMentionNotifications({
+          actorId: req.user._id,
+          postId: post._id,
+          commentId: comment._id,
+          text: trimmedText,
+        });
+      } catch (e) {
+        console.error(
+          "NOTIF_COMMENT_MENTION_FAILED:",
+          e?.message || e,
+        );
+      }
     }
 
     return res.status(201).json({
