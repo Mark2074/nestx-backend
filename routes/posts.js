@@ -1561,7 +1561,27 @@ router.get("/feed/fed", auth, async (req, res) => {
       .sort((a, b) => b.score - a.score)
       .map((x) => x.p);
 
-    const items = merged.slice(skip, skip + limit);
+    const pageItems = merged.slice(skip, skip + limit);
+    const pagePostIds = pageItems
+      .map((post) => post?._id)
+      .filter(Boolean);
+
+    const likedDocs = pagePostIds.length
+      ? await PostLike.find({
+          postId: { $in: pagePostIds },
+          userId: meObjectId,
+        })
+          .select("postId")
+          .lean()
+      : [];
+
+    const likedPostIdSet = new Set(
+      likedDocs.map((like) => String(like.postId))
+    );
+    const items = pageItems.map((post) => ({
+      ...post,
+      likedByMe: likedPostIdSet.has(String(post._id)),
+    }));
 
     return res.json({
       page,
