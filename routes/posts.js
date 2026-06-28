@@ -1238,15 +1238,38 @@ router.get("/user/:userId", auth, async (req, res) => {
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
-        .populate("authorId", "username displayName avatar accountType"),
+        .populate("authorId", "username displayName avatar accountType")
+        .lean(),
       Post.countDocuments(baseQuery),
     ]);
+
+    const postIds = posts
+      .map((post) => post?._id)
+      .filter(Boolean);
+
+    const likedDocs = postIds.length
+      ? await PostLike.find({
+          postId: { $in: postIds },
+          userId: req.user._id,
+        })
+          .select("postId")
+          .lean()
+      : [];
+
+    const likedPostIdSet = new Set(
+      likedDocs.map((like) => String(like.postId))
+    );
+
+    const items = posts.map((post) => ({
+      ...post,
+      likedByMe: likedPostIdSet.has(String(post._id)),
+    }));
 
     return res.json({
       page,
       limit,
       total,
-      items: posts,
+      items,
     });
   } catch (err) {
     console.error("Errore /posts/user/:userId:", err);
