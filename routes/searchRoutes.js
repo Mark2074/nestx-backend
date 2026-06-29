@@ -20,6 +20,7 @@ const {
   getDiscoveryAvailabilityProjection,
   getDiscoveryAvailabilityStages,
 } = require("../utils/eventDiscoveryAvailability");
+const { getCountriesForContinent } = require("../utils/searchContinents");
 const { buildUserLanguageFilter } = require("../utils/searchLanguageFilter");
 
 // ----------------------------------------
@@ -275,6 +276,13 @@ router.get("/search", auth, async (req, res) => {
       ? String(req.query.country).trim()
       : (req.query.area ? String(req.query.area).trim() : null);
     const countryRx = country ? new RegExp(`^${escapeRegex(country)}$`, "i") : null;
+    const continent = req.query.continent
+      ? String(req.query.continent).trim()
+      : null;
+    const continentCountries = country ? [] : getCountriesForContinent(continent);
+    const continentCountryRxs = continentCountries.map(
+      (value) => new RegExp(`^${escapeRegex(value)}$`, "i")
+    );
 
     const language = req.query.language
       ? String(req.query.language).trim().toLowerCase()
@@ -356,6 +364,15 @@ router.get("/search", auth, async (req, res) => {
               { "location.country": countryRx },
               { country: countryRx },
               { area: countryRx }, // legacy
+            ],
+          });
+        } else if (continentCountryRxs.length > 0) {
+          userQuery.$and = userQuery.$and || [];
+          userQuery.$and.push({
+            $or: [
+              { "location.country": { $in: continentCountryRxs } },
+              { country: { $in: continentCountryRxs } },
+              { area: { $in: continentCountryRxs } },
             ],
           });
         }
