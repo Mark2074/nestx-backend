@@ -145,6 +145,9 @@ router.get("/search", auth, async (req, res) => {
     const isAdmin = req.user?.accountType === "admin";
     const isVip = req.user?.isVip === true;
     const canUseVipFilters = isVip || isAdmin;
+    const appVariant = String(req.get("X-NestX-App-Variant") || req.query.appVariant || "full").trim().toLowerCase();
+    const isStoreVariant = appVariant === "store";
+    const canUseUserFilters = isStoreVariant || canUseVipFilters;
 
     const q = String(req.query.q ?? "").trim();
 
@@ -343,8 +346,7 @@ router.get("/search", auth, async (req, res) => {
         userQuery.$or = [{ displayName: rx }, { username: rx }, { email: rx }, { bio: rx }];
       }
 
-      // VIP only: profileType/country/language
-      if (canUseVipFilters) {
+      if (canUseUserFilters) {
         if (profileType) userQuery.profileType = profileType;
 
         if (countryRx) {
