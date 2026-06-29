@@ -10,7 +10,10 @@ const Follow = require("../models/Follow");
 
 const auth = require("../middleware/authMiddleware");
 const { getBlockedUserIds } = require("../utils/blockUtils");
-const { getOppositeEnvironmentUserQuery } = require("../utils/internalTestAccounts");
+const {
+  getOppositeEnvironmentUserQuery,
+  getSameEnvironmentUserQuery,
+} = require("../utils/internalTestAccounts");
 const { publicActiveUserQuery } = require("../utils/publicSocialUser");
 const crypto = require("crypto");
 const SensitiveDictionaryEntry = require("../models/SensitiveDictionaryEntry");
@@ -349,6 +352,12 @@ router.get("/search", auth, async (req, res) => {
       const userQuery = publicActiveUserQuery({
         _id: { $nin: finalExcludedObjIdsUsers },
       });
+      const sameEnvironmentQuery = getSameEnvironmentUserQuery(me);
+
+      if (sameEnvironmentQuery) {
+        userQuery.$and = userQuery.$and || [];
+        userQuery.$and.push(sameEnvironmentQuery);
+      }
 
       if (rx) {
         userQuery.$or = [{ displayName: rx }, { username: rx }, { email: rx }, { bio: rx }];
