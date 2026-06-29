@@ -134,6 +134,7 @@ module.exports = {
   isBridgeUser,
   getBridgeUserConditions,
   isInternalTestEmail,
+  getInternalTestEmailQuery,
   isInternalTestUser,
   getInternalTestUserConditions,
   getOppositeEnvironmentUserQuery,

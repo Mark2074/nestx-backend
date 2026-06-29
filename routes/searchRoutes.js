@@ -12,7 +12,8 @@ const auth = require("../middleware/authMiddleware");
 const { getBlockedUserIds } = require("../utils/blockUtils");
 const {
   getOppositeEnvironmentUserQuery,
-  getSameEnvironmentUserQuery,
+  getInternalTestEmailQuery,
+  isInternalTestEmail,
 } = require("../utils/internalTestAccounts");
 const { publicActiveUserQuery } = require("../utils/publicSocialUser");
 const crypto = require("crypto");
@@ -328,7 +329,7 @@ router.get("/search", auth, async (req, res) => {
     // - USERS: blocked + admin + banned
     // - POSTS/EVENTS: blocked + privateNotAllowed + admin + banned
     const finalExcludedUserIdsUsers = Array.from(
-      new Set([...blockedIds, ...adminIds, ...bannedIds, ...environmentExcludedIds])
+      new Set([...blockedIds, ...adminIds, ...bannedIds])
     );
 
     const finalExcludedUserIdsPostsEvents = Array.from(
@@ -352,11 +353,15 @@ router.get("/search", auth, async (req, res) => {
       const userQuery = publicActiveUserQuery({
         _id: { $nin: finalExcludedObjIdsUsers },
       });
-      const sameEnvironmentQuery = getSameEnvironmentUserQuery(me);
+      const internalEmailQuery = getInternalTestEmailQuery();
 
-      if (sameEnvironmentQuery) {
+      if (internalEmailQuery) {
         userQuery.$and = userQuery.$and || [];
-        userQuery.$and.push(sameEnvironmentQuery);
+        userQuery.$and.push(
+          isInternalTestEmail(me?.email)
+            ? internalEmailQuery
+            : { $nor: [internalEmailQuery] }
+        );
       }
 
       if (rx) {
