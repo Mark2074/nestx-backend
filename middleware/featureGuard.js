@@ -1,10 +1,5 @@
 // middleware/featureGuard.js
-
-function parseBool(v) {
-  if (v === true) return true;
-  const s = String(v ?? "").trim().toLowerCase();
-  return s === "true" || s === "1" || s === "yes" || s === "on";
-}
+const { areTokensEnabled, isLiveEnabled } = require("../config/features");
 
 /**
  * featureGuard("tokens"|"live", options?)
@@ -22,16 +17,11 @@ module.exports = function featureGuard(featureName, options = {}) {
 
       if (allowAdmin && isAdmin) return next();
 
-      const economyEnabled = parseBool(process.env.ECONOMY_ENABLED);
-
-      // master switch: se ECONOMY_ENABLED=false, tokens deve essere OFF a prescindere
-      const tokensEnabled = economyEnabled && parseBool(process.env.TOKENS_ENABLED ?? "true");
-
       const enabled =
         featureName === "tokens"
-          ? tokensEnabled
+          ? areTokensEnabled()
           : featureName === "live"
-          ? parseBool(process.env.LIVE_ENABLED)
+          ? isLiveEnabled()
           : false;
 
       if (!enabled) {
