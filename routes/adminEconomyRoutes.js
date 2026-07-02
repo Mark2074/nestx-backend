@@ -19,6 +19,10 @@ const {
   getValidJoinedUserMetricMatch,
   getValidUserMetricMatch,
 } = require("../utils/adminMetricUserFilters");
+const {
+  getInternalTestUserConditions,
+  isInternalTestUser,
+} = require("../utils/internalTestAccounts");
 
 const {
   freezeNativePrivateHeldEvent,
@@ -44,22 +48,32 @@ function getClientIp(req) {
 
 function getActiveInternalTestAccountQuery() {
   return {
-    isInternalTest: true,
-    isDeleted: { $ne: true },
-    deletedAt: null,
-    isBanned: { $ne: true },
-    isSuspended: { $ne: true },
+    $and: [
+      { $or: getInternalTestUserConditions() },
+      {
+        isDeleted: { $ne: true },
+        deletedAt: null,
+        isBanned: { $ne: true },
+        isSuspended: { $ne: true },
+      },
+    ],
   };
 }
 
 function isActiveInternalTestAccount(user) {
   return (
-    user?.isInternalTest === true &&
+    isInternalTestUser(user) &&
     user?.isDeleted !== true &&
     !user?.deletedAt &&
     user?.isBanned !== true &&
     user?.isSuspended !== true
   );
+}
+
+function getCreatorState(user) {
+  return String(user?.accountType || "").toLowerCase() === "creator" || user?.isCreator === true
+    ? "creator"
+    : "base";
 }
 
 async function writeAdminTestAudit(req, {
@@ -114,7 +128,7 @@ router.get("/test-accounts", auth, adminGuard, async (req, res) => {
   try {
     const users = await User.find(getActiveInternalTestAccountQuery())
       .select(
-        "_id email displayName username avatar accountType isInternalTest isVip vipExpiresAt tokenBalance tokenPurchased tokenEarnings tokenRedeemable tokenHeld createdAt"
+        "_id email displayName username avatar accountType isInternalTest isVip vipExpiresAt tokenBalance tokenPurchased tokenEarnings tokenRedeemable tokenHeld isCreator creatorEnabled creatorVerification payoutEnabled payoutStatus createdAt"
       )
       .sort({ createdAt: -1 })
       .limit(200)
@@ -124,7 +138,8 @@ router.get("/test-accounts", auth, adminGuard, async (req, res) => {
       status: "ok",
       data: users.map((user) => ({
         ...user,
-        eligibleForTestGrants: user?.isInternalTest === true,
+        eligibleForTestGrants: isInternalTestUser(user),
+        creatorState: getCreatorState(user),
       })),
     });
   } catch (e) {
@@ -174,7 +189,7 @@ router.post("/test-accounts/:userId/grant-tokens", auth, adminGuard, async (req,
         throw err;
       }
 
-      if (target.isInternalTest !== true) {
+      if (!isInternalTestUser(target)) {
         const err = new Error("Test token grants are allowed only for internal test accounts");
         err.statusCode = 403;
         err.code = "TARGET_NOT_INTERNAL_TEST";
@@ -330,7 +345,7 @@ router.post("/test-accounts/:userId/grant-vip", auth, adminGuard, async (req, re
       return res.status(404).json({ status: "error", code: "USER_NOT_FOUND", message: "User not found" });
     }
 
-    if (target.isInternalTest !== true) {
+    if (!isInternalTestUser(target)) {
       return res.status(403).json({
         status: "error",
         code: "TARGET_NOT_INTERNAL_TEST",
@@ -409,6 +424,335 @@ router.post("/test-accounts/:userId/grant-vip", auth, adminGuard, async (req, re
     });
   } catch (e) {
     console.error("admin test vip grant error:", e);
+    return res.status(500).json({ status: "error", message: "Internal error" });
+  }
+});
+
+// POST /api/admin/economy/test-accounts/:userId/revoke-vip
+router.post("/test-accounts/:userId/revoke-vip", auth, adminGuard, async (req, res) => {
+  try {
+    const targetUserId = String(req.params.userId || "").trim();
+    const note = String(req.body?.note || "").trim().slice(0, 300) || null;
+
+    if (!mongoose.Types.ObjectId.isValid(targetUserId)) {
+      return res.status(400).json({ status: "error", code: "INVALID_USER_ID", message: "Invalid user ID" });
+    }
+
+    const target = await User.findById(targetUserId)
+      .select("_id email displayName isInternalTest isDeleted deletedAt isBanned isSuspended isVip vipExpiresAt vipAutoRenew vipSince")
+      .lean();
+
+    if (!target) {
+      return res.status(404).json({ status: "error", code: "USER_NOT_FOUND", message: "User not found" });
+    }
+
+    if (!isInternalTestUser(target)) {
+      return res.status(403).json({
+        status: "error",
+        code: "TARGET_NOT_INTERNAL_TEST",
+        message: "Test VIP changes are allowed only for internal test accounts",
+      });
+    }
+
+    if (!isActiveInternalTestAccount(target)) {
+      return res.status(403).json({
+        status: "error",
+        code: "TARGET_TEST_ACCOUNT_INACTIVE",
+        message: "Test VIP changes are allowed only for active internal test accounts",
+      });
+    }
+
+    const updated = await User.findByIdAndUpdate(
+      target._id,
+      {
+        $set: {
+          isVip: false,
+          vipExpiresAt: null,
+          vipAutoRenew: false,
+          vipSince: null,
+        },
+      },
+      { new: true }
+    ).select("_id isVip vipExpiresAt vipAutoRenew vipSince isInternalTest");
+
+    await Notification.create({
+      userId: target._id,
+      actorId: req.user?._id || null,
+      type: "SYSTEM_VIP_CHANGED",
+      targetType: "user",
+      targetId: target._id,
+      message: "Test VIP revoked",
+      data: {
+        testOnly: true,
+        vipExpiresAt: null,
+      },
+      isPersistent: false,
+      dedupeKey: `test_vip_revoke:${target._id}:${Date.now()}`,
+    });
+
+    await writeAdminTestAudit(req, {
+      actionType: "ADMIN_TEST_VIP_REVOKE",
+      targetUserId,
+      before: {
+        isVip: target.isVip === true,
+        vipExpiresAt: target.vipExpiresAt || null,
+        vipAutoRenew: target.vipAutoRenew === true,
+        vipSince: target.vipSince || null,
+      },
+      after: {
+        isVip: updated?.isVip === true,
+        vipExpiresAt: updated?.vipExpiresAt || null,
+        vipAutoRenew: updated?.vipAutoRenew === true,
+        vipSince: updated?.vipSince || null,
+      },
+      note,
+    });
+
+    return res.json({
+      status: "ok",
+      data: {
+        targetUserId,
+        isVip: updated?.isVip === true,
+        vipExpiresAt: updated?.vipExpiresAt || null,
+        vipAutoRenew: updated?.vipAutoRenew === true,
+      },
+    });
+  } catch (e) {
+    console.error("admin test vip revoke error:", e);
+    return res.status(500).json({ status: "error", message: "Internal error" });
+  }
+});
+
+// POST /api/admin/economy/test-accounts/:userId/assign-creator
+router.post("/test-accounts/:userId/assign-creator", auth, adminGuard, async (req, res) => {
+  try {
+    const targetUserId = String(req.params.userId || "").trim();
+    const note = String(req.body?.note || "").trim().slice(0, 300) || null;
+
+    if (!mongoose.Types.ObjectId.isValid(targetUserId)) {
+      return res.status(400).json({ status: "error", code: "INVALID_USER_ID", message: "Invalid user ID" });
+    }
+
+    const target = await User.findById(targetUserId).select(`
+      _id
+      email
+      displayName
+      isInternalTest
+      isDeleted
+      deletedAt
+      isBanned
+      isSuspended
+      accountType
+      isCreator
+      creatorEnabled
+      creatorDisabledReason
+      creatorDisabledAt
+      creatorVerification
+      payoutEnabled
+      payoutStatus
+    `);
+
+    if (!target) {
+      return res.status(404).json({ status: "error", code: "USER_NOT_FOUND", message: "User not found" });
+    }
+
+    if (!isInternalTestUser(target)) {
+      return res.status(403).json({
+        status: "error",
+        code: "TARGET_NOT_INTERNAL_TEST",
+        message: "Test Creator changes are allowed only for internal test accounts",
+      });
+    }
+
+    if (!isActiveInternalTestAccount(target)) {
+      return res.status(403).json({
+        status: "error",
+        code: "TARGET_TEST_ACCOUNT_INACTIVE",
+        message: "Test Creator changes are allowed only for active internal test accounts",
+      });
+    }
+
+    if (target.accountType === "admin") {
+      return res.status(403).json({ status: "error", code: "TARGET_ADMIN", message: "Admins cannot be changed here" });
+    }
+
+    const before = {
+      accountType: target.accountType || "base",
+      isCreator: target.isCreator === true,
+      creatorEnabled: target.creatorEnabled === true,
+      creatorDisabledReason: target.creatorDisabledReason || null,
+      creatorDisabledAt: target.creatorDisabledAt || null,
+      creatorVerificationStatus: target.creatorVerification?.status || "none",
+      verifiedAt: target.creatorVerification?.verifiedAt || null,
+      verifiedByAdminId: target.creatorVerification?.verifiedByAdminId || null,
+      payoutEnabled: target.payoutEnabled === true,
+      payoutStatus: target.payoutStatus || null,
+    };
+
+    const now = new Date();
+    target.isCreator = true;
+    target.accountType = "creator";
+    target.creatorEnabled = true;
+    target.creatorDisabledReason = null;
+    target.creatorDisabledAt = null;
+
+    target.creatorVerification = target.creatorVerification || {};
+    target.creatorVerification.status = "approved";
+    target.creatorVerification.verifiedAt = now;
+    target.creatorVerification.verifiedByAdminId = req.user?._id || null;
+    target.creatorVerification.rejectedAt = null;
+    target.creatorVerification.rejectedByAdminId = null;
+    target.creatorVerification.rejectionReason = null;
+    if (note) target.creatorVerification.note = note;
+
+    await target.save();
+
+    await writeAdminTestAudit(req, {
+      actionType: "ADMIN_TEST_CREATOR_ASSIGN",
+      targetUserId,
+      before,
+      after: {
+        accountType: target.accountType || "base",
+        isCreator: target.isCreator === true,
+        creatorEnabled: target.creatorEnabled === true,
+        creatorDisabledReason: target.creatorDisabledReason || null,
+        creatorDisabledAt: target.creatorDisabledAt || null,
+        creatorVerificationStatus: target.creatorVerification?.status || "none",
+        verifiedAt: target.creatorVerification?.verifiedAt || null,
+        verifiedByAdminId: target.creatorVerification?.verifiedByAdminId || null,
+        payoutEnabled: target.payoutEnabled === true,
+        payoutStatus: target.payoutStatus || null,
+      },
+      note,
+    });
+
+    return res.json({
+      status: "ok",
+      data: {
+        targetUserId,
+        accountType: target.accountType,
+        isCreator: target.isCreator === true,
+        creatorEnabled: target.creatorEnabled === true,
+        creatorVerificationStatus: target.creatorVerification?.status || "none",
+      },
+    });
+  } catch (e) {
+    console.error("admin test creator assign error:", e);
+    return res.status(500).json({ status: "error", message: "Internal error" });
+  }
+});
+
+// POST /api/admin/economy/test-accounts/:userId/revoke-creator
+router.post("/test-accounts/:userId/revoke-creator", auth, adminGuard, async (req, res) => {
+  try {
+    const targetUserId = String(req.params.userId || "").trim();
+    const note = String(req.body?.note || "").trim().slice(0, 300) || null;
+
+    if (!mongoose.Types.ObjectId.isValid(targetUserId)) {
+      return res.status(400).json({ status: "error", code: "INVALID_USER_ID", message: "Invalid user ID" });
+    }
+
+    const target = await User.findById(targetUserId).select(`
+      _id
+      email
+      displayName
+      isInternalTest
+      isDeleted
+      deletedAt
+      isBanned
+      isSuspended
+      accountType
+      isCreator
+      creatorEnabled
+      creatorDisabledReason
+      creatorDisabledAt
+      creatorVerification
+      payoutEnabled
+      payoutStatus
+    `);
+
+    if (!target) {
+      return res.status(404).json({ status: "error", code: "USER_NOT_FOUND", message: "User not found" });
+    }
+
+    if (!isInternalTestUser(target)) {
+      return res.status(403).json({
+        status: "error",
+        code: "TARGET_NOT_INTERNAL_TEST",
+        message: "Test Creator changes are allowed only for internal test accounts",
+      });
+    }
+
+    if (!isActiveInternalTestAccount(target)) {
+      return res.status(403).json({
+        status: "error",
+        code: "TARGET_TEST_ACCOUNT_INACTIVE",
+        message: "Test Creator changes are allowed only for active internal test accounts",
+      });
+    }
+
+    if (target.accountType === "admin") {
+      return res.status(403).json({ status: "error", code: "TARGET_ADMIN", message: "Admins cannot be changed here" });
+    }
+
+    const before = {
+      accountType: target.accountType || "base",
+      isCreator: target.isCreator === true,
+      creatorEnabled: target.creatorEnabled === true,
+      creatorDisabledReason: target.creatorDisabledReason || null,
+      creatorDisabledAt: target.creatorDisabledAt || null,
+      creatorVerificationStatus: target.creatorVerification?.status || "none",
+      payoutEnabled: target.payoutEnabled === true,
+      payoutStatus: target.payoutStatus || null,
+    };
+
+    const now = new Date();
+    target.isCreator = false;
+    target.accountType = "base";
+    target.creatorEnabled = false;
+    target.creatorDisabledReason = "ADMIN_TEST_CREATOR_REVOKED";
+    target.creatorDisabledAt = now;
+
+    target.creatorVerification = target.creatorVerification || {};
+    target.creatorVerification.status = "none";
+    target.creatorVerification.verifiedAt = null;
+    target.creatorVerification.verifiedByAdminId = null;
+    target.creatorVerification.rejectedAt = null;
+    target.creatorVerification.rejectedByAdminId = null;
+    target.creatorVerification.rejectionReason = null;
+    if (note) target.creatorVerification.note = note;
+
+    await target.save();
+
+    await writeAdminTestAudit(req, {
+      actionType: "ADMIN_TEST_CREATOR_REVOKE",
+      targetUserId,
+      before,
+      after: {
+        accountType: target.accountType || "base",
+        isCreator: target.isCreator === true,
+        creatorEnabled: target.creatorEnabled === true,
+        creatorDisabledReason: target.creatorDisabledReason || null,
+        creatorDisabledAt: target.creatorDisabledAt || null,
+        creatorVerificationStatus: target.creatorVerification?.status || "none",
+        payoutEnabled: target.payoutEnabled === true,
+        payoutStatus: target.payoutStatus || null,
+      },
+      note,
+    });
+
+    return res.json({
+      status: "ok",
+      data: {
+        targetUserId,
+        accountType: target.accountType,
+        isCreator: target.isCreator === true,
+        creatorEnabled: target.creatorEnabled === true,
+        creatorVerificationStatus: target.creatorVerification?.status || "none",
+      },
+    });
+  } catch (e) {
+    console.error("admin test creator revoke error:", e);
     return res.status(500).json({ status: "error", message: "Internal error" });
   }
 });

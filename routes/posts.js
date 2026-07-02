@@ -629,6 +629,13 @@ async function createCommentMentionNotifications({
  */
 router.post("/", auth, async (req, res) => {
   try {
+    const appVariant = String(req.get("X-NestX-App-Variant") || req.body?.appVariant || "full")
+      .trim()
+      .toLowerCase();
+    const isStoreVariant = appVariant === "store";
+    const isAdmin = String(req.user?.accountType || "").toLowerCase() === "admin";
+    const canCreatePoll = isStoreVariant || req.user?.isVip === true || isAdmin;
+
     const {
       text,
       tags = [],
@@ -771,8 +778,8 @@ router.post("/", auth, async (req, res) => {
       };
     }
 
-    // Fase 1: solo VIP possono creare poll
-    if (normalizedPoll && !req.user?.isVip) {
+    // Store allows polls for Base users; Full keeps the VIP/admin gate.
+    if (normalizedPoll && !canCreatePoll) {
       return res.status(403).json({ error: "Only VIP users can create polls." });
     }
 
