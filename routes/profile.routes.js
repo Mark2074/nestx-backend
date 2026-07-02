@@ -20,6 +20,7 @@ const {
   validateUsername,
   validateOptionalUsername,
 } = require("../utils/username");
+const { hasVipPrivileges } = require("../config/features");
 
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
 const ALLOWED_MIMES = new Set(["image/jpeg", "image/png", "image/webp"]);
@@ -350,7 +351,7 @@ router.put("/update", auth, async (req, res) => {
 
     // interestsVip: SOLO VIP
     if ("interestsVip" in updates) {
-      if (currentUser.isVip !== true) {
+      if (!hasVipPrivileges(currentUser)) {
         return res.status(403).json({ status: "error", message: "Only VIPs can change interestsVip" });
       }
       if (!Array.isArray(updates.interestsVip)) {

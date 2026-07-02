@@ -33,6 +33,7 @@ const {
   getDiscoveryAvailabilityProjection,
   getDiscoveryAvailabilityStages,
 } = require("../utils/eventDiscoveryAvailability");
+const { hasVipPrivileges } = require("../config/features");
 
 router.get('/ping-events', (req, res) => {
   res.json({ status: 'ok', source: 'eventRoutes' });
@@ -2778,7 +2779,7 @@ router.get("/feed", auth, featureGuard("live"), async (req, res) => {
     if (category) query.category = category;
 
     // Filtro lingua: SOLO VIP
-    if (language && req.user?.isVip === true) {
+    if (language && hasVipPrivileges(req.user)) {
       query.language = String(language).trim().toLowerCase();
     }
 
@@ -4194,7 +4195,7 @@ router.post("/:id/join", auth, featureGuard("live"), async (req, res) => {
       .exec();
 
     const isAdmin = String(dbUser?.accountType || getAccountTypeFromUser(user) || "").toLowerCase() === "admin";
-    const isVip = dbUser?.isVip === true;
+    const isVip = hasVipPrivileges(dbUser);
     const tokenBalance = Number(dbUser?.tokenBalance || 0);
     const tokenHeld = Number(dbUser?.tokenHeld || 0);
     const spendableTokens = Math.max(0, tokenBalance - tokenHeld);

@@ -13,6 +13,7 @@ const {
   getSameEnvironmentUserQuery,
   shouldHideInternalTestUser,
 } = require("../utils/internalTestAccounts");
+const { hasVipPrivileges } = require("../config/features");
 
 /**
  * Utils
@@ -24,18 +25,9 @@ function getAccountTypeFromUser(user) {
 
 function getDailyLimitFromUser(user) {
   // VIP è uno status booleano (isVip), come da concept attuale
-  return user && user.isVip === true ? 100 : 10;
+  return hasVipPrivileges(user) ? 100 : 10;
 }
 
-function parseBool(v) {
-  if (v === true) return true;
-  const s = String(v ?? "").trim().toLowerCase();
-  return s === "true" || s === "1" || s === "yes" || s === "on";
-}
-
-function isEconomyEnabled() {
-  return parseBool(process.env.ECONOMY_ENABLED);
-}
 function getRomeDayKey(date = new Date()) {
   // "en-CA" restituisce YYYY-MM-DD. Timezone coerente con Europe/Rome.
   return date.toLocaleDateString("en-CA", { timeZone: "Europe/Rome" });
@@ -196,8 +188,8 @@ router.post("/:recipientId", auth, async (req, res) => {
     }
 
     // Daily message limits are economy-controlled. When ECONOMY_ENABLED=false,
-    // Base/VIP/Creator users can send unlimited private messages.
-    if (isEconomyEnabled()) {
+    // Base/VIP/Creator users receive the same effective limit as VIP users.
+    {
       // ✅ Limite giornaliero messaggi (concept attuale: Base 10, VIP 100)
       const dayKey = getRomeDayKey();
       const dailyLimit = getDailyLimitFromUser(dbSender);
@@ -492,7 +484,7 @@ router.delete("/:messageId", auth, async (req, res) => {
     }
 
     // ✅ Solo VIP possono eliminare messaggi (policy attuale)
-    if (user.isVip !== true) {
+    if (!hasVipPrivileges(user)) {
       return res.status(403).json({
         status: "error",
         message: "Only VIP users can delete messages",

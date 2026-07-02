@@ -26,6 +26,7 @@ const {
 } = require("../utils/eventDiscoveryAvailability");
 const { getCountriesForContinent } = require("../utils/searchContinents");
 const { buildUserLanguageFilter } = require("../utils/searchLanguageFilter");
+const { hasVipPrivileges } = require("../config/features");
 
 // ----------------------------------------
 // Helpers
@@ -148,7 +149,7 @@ router.get("/search", auth, async (req, res) => {
   try {
     const me = req.user;
     const isAdmin = req.user?.accountType === "admin";
-    const isVip = req.user?.isVip === true;
+    const isVip = hasVipPrivileges(req.user);
     const canUseVipFilters = isVip || isAdmin;
     const appVariant = String(req.get("X-NestX-App-Variant") || req.query.appVariant || "full").trim().toLowerCase();
     const isStoreVariant = appVariant === "store";

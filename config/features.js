@@ -16,8 +16,14 @@ function areTokensEnabled() {
   return isEconomyEnabled() && parseBool(process.env.TOKENS_ENABLED ?? "true");
 }
 
+function hasVipPrivileges(user) {
+  if (!isEconomyEnabled()) return true;
+  return user?.isVip === true || String(user?.accountType || "").toLowerCase() === "vip";
+}
+
 module.exports = {
   areTokensEnabled,
+  hasVipPrivileges,
   isEconomyEnabled,
   isLiveEnabled,
   parseBool,

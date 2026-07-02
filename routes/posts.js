@@ -32,6 +32,7 @@ const {
   getSameEnvironmentUserQuery,
   shouldHideInternalTestUser,
 } = require("../utils/internalTestAccounts");
+const { hasVipPrivileges } = require("../config/features");
 const {
   shouldHidePublicSocialUser,
 } = require("../utils/publicSocialUser");
@@ -261,8 +262,8 @@ router.post("/media/upload", auth, upload.array("files", 6), async (req, res) =>
     const files = Array.isArray(req.files) ? req.files : [];
 
     // ✅ enforce duration for uploaded videos (Base/VIP)
-    const isVip = !!req.user?.isVip;
-    const maxSeconds = isVip ? 180 : 60;
+    const hasEffectiveVip = hasVipPrivileges(req.user);
+    const maxSeconds = hasEffectiveVip ? 180 : 60;
 
     try {
       for (const f of files) {
@@ -279,7 +280,7 @@ router.post("/media/upload", auth, upload.array("files", 6), async (req, res) =>
 
             return res.status(400).json({
               status: "error",
-              message: isVip ? msgVip : msgBase,
+              message: hasEffectiveVip ? msgVip : msgBase,
             });
           }
         } finally {
@@ -634,7 +635,7 @@ router.post("/", auth, async (req, res) => {
       .toLowerCase();
     const isStoreVariant = appVariant === "store";
     const isAdmin = String(req.user?.accountType || "").toLowerCase() === "admin";
-    const canCreatePoll = isStoreVariant || req.user?.isVip === true || isAdmin;
+    const canCreatePoll = isStoreVariant || hasVipPrivileges(req.user) || isAdmin;
 
     const {
       text,
@@ -1023,8 +1024,8 @@ router.post("/:id/poll/vote", auth, async (req, res) => {
 
     // se esiste e sta provando a cambiare
     if (existing && existing.optionIndex !== optionIndex) {
-      const isVip = !!req.user?.isVip;
-      if (!isVip) {
+      const canChangeVote = hasVipPrivileges(req.user);
+      if (!canChangeVote) {
         return res.status(403).json({
           status: "error",
           message: "Only VIP users can change their vote",
@@ -1354,7 +1355,7 @@ router.get("/feed/fedbase", auth, async (req, res) => {
 router.get('/feed/fedvip', auth, async (req, res) => {
   try {
     // ✅ VIP = status boolean
-    if (req.user?.isVip !== true) {
+    if (!hasVipPrivileges(req.user)) {
       return res.status(403).json({ error: 'Accesso riservato agli utenti VIP.' });
     }
 
@@ -1423,7 +1424,7 @@ router.get("/feed/fed", auth, async (req, res) => {
     const meId = String(req.user._id);        // stringa (per confronti / $nin)
 
     const contentContext = req.user?.appSettings?.contentContext || "standard";
-    const isVip = req.user?.isVip === true;
+    const isVip = hasVipPrivileges(req.user);
     const isAdminViewer = String(req.user?.accountType || "").toLowerCase() === "admin";
 
     const interestsVip = Array.isArray(req.user?.interestsVip) ? req.user.interestsVip : [];

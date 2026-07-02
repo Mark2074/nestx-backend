@@ -15,6 +15,7 @@ const {
   getDiscoveryAvailabilityProjection,
   getDiscoveryAvailabilityStages,
 } = require("../utils/eventDiscoveryAvailability");
+const { hasVipPrivileges } = require("../config/features");
 
 /**
  * Helpers
@@ -115,7 +116,7 @@ router.get("/search", auth, async (req, res) => {
     const isAdmin = String(me?.accountType || "").toLowerCase() === "admin";
 
     // VIP = status boolean (come deciso)
-    const isVip = me?.isVip === true;
+    const isVip = hasVipPrivileges(me);
     const meId = me?._id || me?.id;
     if (!meId) return res.status(401).json({ error: "Unauthorized (missing user id)" });
 
